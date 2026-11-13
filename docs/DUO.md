@@ -6,6 +6,10 @@
 
 简体中文: [DUO.zh-CN.md](DUO.zh-CN.md)
 
+[![Strata Duo: a 9-minute video walkthrough of how it works, the setup and the measurements](duo-video.jpg)](https://youtu.be/KZTWxJuAR7A)
+
+Video walkthrough (9 minutes, English): <https://youtu.be/KZTWxJuAR7A>
+
 ## Contents
 
 1. [What it is and what it is not](#what-it-is-and-what-it-is-not)

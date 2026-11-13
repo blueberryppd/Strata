@@ -5,6 +5,10 @@
 
 English: [DUO.md](DUO.md)（以英文版为准）
 
+[![Strata Duo：9 分钟讲解视频，包括原理、安装步骤和实测结果](duo-video.jpg)](https://youtu.be/KZTWxJuAR7A)
+
+讲解视频（9 分钟，英文旁白）：<https://youtu.be/KZTWxJuAR7A>
+
 ## 目录
 
 1. [它是什么，不是什么](#它是什么不是什么)
