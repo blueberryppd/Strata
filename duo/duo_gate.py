@@ -329,22 +329,32 @@ class Gate(BaseHTTPRequestHandler):
         with lock:
             active += 1
         try:
-            err = ensure_loaded()
-            if err:
-                return self.reply(503, {"error": {"type": "unavailable", "message": err}})
-            with lock:
-                forwarding += 1
-            try:
-                self.forward(body)
-            finally:
+            # Twice at most: a pair that died a moment ago can still look loaded (its server answers /v1/models while
+            # the engines are ending). The server then refuses the request before any of it reached the client: wait,
+            # look again (which starts the pair anew when it is gone), and send the request once more.
+            for attempt in (0, 1):
+                err = ensure_loaded()
+                if err:
+                    return self.reply(503, {"error": {"type": "unavailable", "message": err}})
                 with lock:
-                    forwarding -= 1
+                    forwarding += 1
+                try:
+                    refused = self.forward(body, may_retry=attempt == 0)
+                finally:
+                    with lock:
+                        forwarding -= 1
+                if not refused:
+                    break
+                log("the server behind the gate refused a request (%s): checking the pair, then once more" % refused)
+                time.sleep(3)
         finally:
             with lock:
                 active -= 1
                 last_done = time.time()
 
-    def forward(self, body):
+    def forward(self, body, may_retry=False):
+        """Passes the request on and the answer back. With may_retry, an answer that says the server cannot serve (no
+        connection, 502, 503) is not passed on: its reason is returned, and nothing has been sent to the client."""
         up = http.client.HTTPConnection("127.0.0.1", args.backend, timeout=3600)
         hop = HOP | {v.strip().lower() for v in self.headers.get("Connection", "").split(",")}
         headers = {k: v for k, v in self.headers.items() if k.lower() not in hop}
@@ -355,7 +365,12 @@ class Gate(BaseHTTPRequestHandler):
             r = up.getresponse()
         except (OSError, http.client.HTTPException) as e:
             up.close()
+            if may_retry:
+                return "no answer: %s" % e
             return self.reply(502, {"error": {"type": "bad_gateway", "message": "the server behind the gate did not answer: %s" % e}})
+        if may_retry and r.status in (502, 503):
+            up.close()
+            return "HTTP %d" % r.status
         try:
             self.send_response(r.status, r.reason)
             length = r.getheader("Content-Length")

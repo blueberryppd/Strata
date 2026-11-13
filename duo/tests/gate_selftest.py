@@ -59,6 +59,7 @@ def main():
     (run / "api_key").write_text(KEY + "\n")
     os.chmod(run / "api_key", 0o600)
     marker, calls, fail_flag = tmp / "loaded", tmp / "calls", tmp / "fail_next_up"
+    refuse_once = tmp / "refuse_once"
     calls.write_text("")
     engine = tmp / "fake_ds4_stub"
     engine.write_text("#!/usr/bin/env python3\nimport time\ntime.sleep(3600)\n")
@@ -107,6 +108,9 @@ esac
             if self.path == "/v1/models":
                 return self.send_json(200, {"object": "list", "data": [{"id": "stub-model", "object": "model", "owned_by": "stub"}]})
             if self.path == "/v1/chat/completions":
+                if refuse_once.exists():   # (a server whose engine has just died: it refuses, once)
+                    refuse_once.unlink()
+                    return self.send_json(503, {"error": "stub: the engine is gone"})
                 time.sleep(float(body.get("stub_sleep", 0)))
                 if body.get("stream"):
                     self.send_response(200)
@@ -235,6 +239,12 @@ esac
         check("a failed load: 503 with the reason", st == 503 and "fails on purpose" in json.dumps(j), "HTTP %d" % st)
         st, j = request(G, "POST", "/v1/chat/completions", body=chat)
         check("the next request loads again", st == 200 and marker.exists(), "HTTP %d" % st)
+
+        # a server that refuses one request (its engine died a moment ago): the gate looks again and sends it once more
+        refuse_once.write_text("")
+        t0 = time.time()
+        st, j = request(G, "POST", "/v1/chat/completions", body=chat)
+        check("a refused request is sent once more, not passed on as 503", st == 200 and not refuse_once.exists(), "HTTP %d after %.1f s" % (st, time.time() - t0))
     finally:
         gate.terminate()
         try:
