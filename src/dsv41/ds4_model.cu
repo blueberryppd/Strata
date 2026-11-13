@@ -5102,6 +5102,14 @@ struct Model::Impl {
           for (int mi = 0; mi < l0.nm; ++mi) {
             Layer& l = member(l0, mi);
             if (l.dev != di) continue;
+            if (l.foreign) {   // Duo: the other host's layer - none of its weights, only the state reset() and the checkpoints walk
+                if (l.kv_src && l.ratio > 1 &&
+                    (!dalloc(d, l.c_kv, (size_t) l.ratio * g.hd, err) || !dalloc(d, l.c_score, (size_t) l.ratio * g.hd, err)))
+                    return false;
+                if (!dalloc(d, l.win, (size_t) g.win * win_rb(), err, &d.caches)) return false;
+                if (!dalloc(d, l.vram_tab, (size_t) l.n_exp, err, acct)) return false;
+                continue;
+            }
             // (a group's member: its share of the heads (wq_b columns, the sinks), of wo_a's groups and wo_b's rows,
             // of the shared expert's FFN; the rest whole)
             const int nm = l0.nm, na = g.heads / std::max(1, l.ahn), ha = l.ah0 / std::max(1, l.ahn);
@@ -5174,7 +5182,7 @@ struct Model::Impl {
             }
             if (!dalloc(d, l.vram_tab, (size_t) l.n_exp, err, acct)) return false;
           }
-        if (d.grp == devs[(size_t) head_dev].grp) {   // the head: each member of its group a share of the columns
+        if (d.grp == devs[(size_t) head_dev].grp && o.duo_role != 1) {   // the head: each member of its group a share of the columns (Duo: not the prefix host's)
             const int hn = head_nm();
             if (!mat(d, "head", d.head, err, acct, d.mi, hn, true) || !f32(d, "norm.weight", d.norm_w, err, acct, (size_t) g.dim))
                 return false;
