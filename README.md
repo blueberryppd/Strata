@@ -1,3 +1,9 @@
+> **Strata Duo: an experimental fork.** This branch adds *Strata Duo* to Strata 0.2.10: one DeepSeek V4.1 Flash
+> model split by layers over two Apple Silicon Macs connected by a Thunderbolt cable. It is not part of upstream
+> Strata, was tested on one pair of machines, and does not follow upstream releases. Start here:
+> **[docs/DUO.md](docs/DUO.md)** · [简体中文](docs/DUO.zh-CN.md). Everything below this note is upstream Strata's
+> README, unchanged.
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="apps/host/public/brand/strata-lockup-dark.svg">
