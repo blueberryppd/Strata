@@ -1,0 +1,109 @@
+##### A. Duo started with neither --duo-certs nor --duo-insecure (worker, then coordinator)
+   maya-ds4: duo: the link needs --duo-certs DIR (TLS 1.3 with mutual authentication), or --duo-insecure for the plain unauthenticated stream (bench use only)
+      exit 2
+   maya-ds4: duo: the link needs --duo-certs DIR (TLS 1.3 with mutual authentication), or --duo-insecure for the plain unauthenticated stream (bench use only)
+      exit 2
+##### B. openssl s_client against a live TLS worker
+--- B1 no client certificate
+   client: Verification: OK
+   client: New, TLSv1.3, Cipher is TLS_AES_256_GCM_SHA384
+   client: ALPN protocol: strata-duo-1
+   client: Verify return code: 0 (ok)
+   client: 0013B0F601000000:error:0A00045C:SSL routines:ssl3_read_bytes:tlsv13 alert certificate required:ssl/record/rec_layer_s3.c:918:SSL alert number 116
+   worker: ds4 duo: refused a connection from 127.0.0.1: TLS handshake: peer did not return a certificate
+   (worker still waiting)
+--- B2 TLS 1.2-only client (coordinator certificate)
+   client: 0013B0F601000000:error:0A00042E:SSL routines:ssl3_read_bytes:tlsv1 alert protocol version:ssl/record/rec_layer_s3.c:918:SSL alert number 70
+   client: Verification: OK
+   client: New, (NONE), Cipher is (NONE)
+   client:     Verify return code: 0 (ok)
+   worker: ds4 duo: refused a connection from 127.0.0.1: TLS handshake: unsupported protocol
+   (worker still waiting)
+--- B3 wrong role: the WORKER's certificate presented by a client
+   client: Verification: OK
+   client: New, TLSv1.3, Cipher is TLS_AES_256_GCM_SHA384
+   client: ALPN protocol: strata-duo-1
+   client: Verify return code: 0 (ok)
+   client: 0013B0F601000000:error:0A000412:SSL routines:ssl3_read_bytes:ssl/tls alert bad certificate:ssl/record/rec_layer_s3.c:918:SSL alert number 42
+   worker: ds4 duo: refused a connection from 127.0.0.1: TLS handshake: certificate verify failed (certificate: hostname mismatch)
+   (worker still waiting)
+--- B4 a coordinator certificate of a different CA
+   client: Verification: OK
+   client: New, TLSv1.3, Cipher is TLS_AES_256_GCM_SHA384
+   client: ALPN protocol: strata-duo-1
+   client: Verify return code: 0 (ok)
+   client: 0013B0F601000000:error:0A000418:SSL routines:ssl3_read_bytes:tlsv1 alert unknown ca:ssl/record/rec_layer_s3.c:918:SSL alert number 48
+   worker: ds4 duo: refused a connection from 127.0.0.1: TLS handshake: certificate verify failed (certificate: unable to get local issuer certificate)
+   (worker still waiting)
+--- B5 the right certificate, no ALPN strata-duo-1
+   client: Verification: OK
+   client: New, TLSv1.3, Cipher is TLS_AES_256_GCM_SHA384
+   client: Verify return code: 0 (ok)
+   worker: ds4 duo: refused a connection from 127.0.0.1: the peer does not speak strata-duo-1
+   (worker still waiting)
+--- B6 a peer that connects and says nothing (dropped after the handshake's 10 s)
+   worker: ds4 duo: refused a connection from 127.0.0.1: TLS handshake: timed out
+--- B7 (control, must PASS the TLS checks: the right certificate; the worker then ends on the client's non-Duo bytes)
+   client: Peer signature type: rsa_pss_rsae_sha256
+   client: Negotiated TLS1.3 group: X25519MLKEM768
+   client: Verification: OK
+   client: New, TLSv1.3, Cipher is TLS_AES_256_GCM_SHA384
+   client: ALPN protocol: strata-duo-1
+   client: DUOTLS1
+   worker: ds4 duo: link up, TLSv1.3 TLS_AES_256_GCM_SHA384, peer strata-stage-coordinator verified
+   worker: maya-ds4: duo: not a suffix host's greeting
+##### C. engine against engine (pair.sh)
+--- C1 the coordinator holds the worker's certificate under its own file names (wrong role, caught on the coordinator before the wire)
+== neg-swap: worker still waiting, killed
+   worker: ds4 duo: link mode TLS 1.3, mutual authentication: this host is strata-stage-worker, the peer must present a strata-stage-coordinator certificate of <certs>/ca.crt
+   worker: ds4 duo: prefix host, layers [0, 20); waiting on 127.0.0.1:50125 for 127.0.0.1
+   coord:  maya-ds4: duo: --duo-certs: <tests>/swap/strata-stage-coordinator.crt is not a strata-stage-coordinator certificate
+   coord:  "rc": 2, "ids_sha": "e3b0c44298fc1c14",
+--- C2 the coordinator's directory is a different CA's (it refuses the worker; the worker sees its alert)
+== neg-ca2: worker still waiting, killed
+   worker: ds4 duo: link mode TLS 1.3, mutual authentication: this host is strata-stage-worker, the peer must present a strata-stage-coordinator certificate of <certs>/ca.crt
+   worker: ds4 duo: prefix host, layers [0, 20); waiting on 127.0.0.1:50125 for 127.0.0.1
+   worker: ds4 duo: refused a connection from 127.0.0.1: TLS handshake: tlsv1 alert unknown ca
+   coord:  ds4 duo: link mode TLS 1.3, mutual authentication: this host is strata-stage-coordinator, the peer must present a strata-stage-worker certificate of <tests>/ca2/ca.crt
+   coord:  maya-ds4: duo: 127.0.0.1:50125: TLS handshake: certificate verify failed (certificate: self-signed certificate in certificate chain)
+   coord:  "rc": 1, "ids_sha": "e3b0c44298fc1c14",
+--- C3 the coordinator trusts the real CA but presents a different CA's coordinator certificate (the worker refuses it)
+== neg-ca2mix: worker still waiting, killed
+   worker: ds4 duo: link mode TLS 1.3, mutual authentication: this host is strata-stage-worker, the peer must present a strata-stage-coordinator certificate of <certs>/ca.crt
+   worker: ds4 duo: prefix host, layers [0, 20); waiting on 127.0.0.1:50125 for 127.0.0.1
+   worker: ds4 duo: refused a connection from 127.0.0.1: TLS handshake: certificate verify failed (certificate: unable to get local issuer certificate)
+   coord:  ds4 duo: link mode TLS 1.3, mutual authentication: this host is strata-stage-coordinator, the peer must present a strata-stage-worker certificate of <tests>/ca2mix/ca.crt
+   coord:  maya-ds4: duo: 127.0.0.1:50125: the worker refused this host after the TLS handshake: tlsv1 alert unknown ca
+   coord:  "rc": 1, "ids_sha": "e3b0c44298fc1c14",
+--- C4 the coordinator's address is outside --duo-allow (the worker admits 127.0.0.2, the coordinator comes from 127.0.0.1)
+== neg-allow: worker still waiting, killed
+   worker: ds4 duo: link mode TLS 1.3, mutual authentication: this host is strata-stage-worker, the peer must present a strata-stage-coordinator certificate of <certs>/ca.crt
+   worker: ds4 duo: prefix host, layers [0, 20); waiting on 127.0.0.1:50125 for 127.0.0.2
+   worker: ds4 duo: refused a connection from 127.0.0.1: not the --duo-allow address
+   coord:  ds4 duo: link mode TLS 1.3, mutual authentication: this host is strata-stage-coordinator, the peer must present a strata-stage-worker certificate of <certs>/ca.crt
+   coord:  maya-ds4: duo: 127.0.0.1:50125: TLS handshake: unexpected eof while reading
+   coord:  "rc": 1, "ids_sha": "e3b0c44298fc1c14",
+--- C5 a plain (--duo-insecure) coordinator against a TLS worker
+== neg-plain-to-tls: worker still waiting, killed
+   worker: ds4 duo: link mode TLS 1.3, mutual authentication: this host is strata-stage-worker, the peer must present a strata-stage-coordinator certificate of <certs>/ca.crt
+   worker: ds4 duo: prefix host, layers [0, 20); waiting on 127.0.0.1:50125 for 127.0.0.1
+   worker: ds4 duo: refused a connection from 127.0.0.1: TLS handshake: wrong version number
+   coord:  ds4 duo: link mode INSECURE (--duo-insecure): plain TCP, token ids and activations unencrypted, the peer known by its source address only
+   coord:  maya-ds4: duo: no answer from the prefix host
+   coord:  "rc": 1, "ids_sha": "e3b0c44298fc1c14",
+--- C6 a TLS coordinator against a plain (--duo-insecure) worker
+== neg-tls-to-plain: worker exit 1
+   worker: ds4 duo: link mode INSECURE (--duo-insecure): plain TCP, token ids and activations unencrypted, the peer known by its source address only
+   worker: ds4 duo: prefix host, layers [0, 20); waiting on 127.0.0.1:50125 for 127.0.0.1
+   worker: maya-ds4: duo: not a suffix host's greeting
+   coord:  ds4 duo: link mode TLS 1.3, mutual authentication: this host is strata-stage-coordinator, the peer must present a strata-stage-worker certificate of <certs>/ca.crt
+   coord:  maya-ds4: duo: 127.0.0.1:50125: TLS handshake: the peer closed the connection
+   coord:  "rc": 1, "ids_sha": "e3b0c44298fc1c14",
+--- C7 the default build (TLS off) given --duo-certs
+   maya-ds4: duo: --duo-certs needs an engine built with TLS (cmake -DSTRATA_DUO_TLS=ON -DSTRATA_DUO_OPENSSL_ROOT=...); this build has the plain link only (--duo-insecure)
+      exit 2
+done
+--- C8 the coordinator against a server that holds a COORDINATOR certificate of the real CA (wrong role on the worker's side)
+   coord:  ds4 duo: link mode TLS 1.3, mutual authentication: this host is strata-stage-coordinator, the peer must present a strata-stage-worker certificate of <certs>/ca.crt
+   coord:  maya-ds4: duo: 127.0.0.1:50126: TLS handshake: certificate verify failed (certificate: hostname mismatch)
+   server: 0013B0F601000000:error:0A000412:SSL routines:ssl3_read_bytes:ssl/tls alert bad certificate:ssl/record/rec_layer_s3.c:918:SSL alert number 42

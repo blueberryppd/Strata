@@ -1,0 +1,108 @@
+== plain2: worker exit 0
+   worker: ds4 duo: link mode INSECURE (--duo-insecure): plain TCP, token ids and activations unencrypted, the peer known by its source address only
+   worker: ds4 duo: prefix host, layers [0, 20); waiting on 127.0.0.1:50121 for 127.0.0.1
+   worker: ds4 duo: the suffix host is connected
+   worker: duo prefix: 33 windows; 2 ms sending the hand-offs (0.06 ms a window)
+   coord:  ds4 duo: link mode INSECURE (--duo-insecure): plain TCP, token ids and activations unencrypted, the peer known by its source address only
+   coord:  ds4 duo: suffix host, layers [20, 40) + head; prefix host 127.0.0.1:50121 holds [0, 20)
+   coord:  duo suffix: 33 windows; waited 3746 ms for the prefix host's hand-offs (113.5 ms a window: its layers and the link)
+   coord:  decode: 32 tokens in 5315 ms (5.83 tok/s); CPU lane: 3720 of 3720 experts, streamed to the GPU: 0; the cache moved 0 (0 in all)
+   coord:  "rc": 0, "ids_sha": "136cfb473f3e2b0c",
+== tls2: worker exit 0
+   worker: ds4 duo: link mode TLS 1.3, mutual authentication: this host is strata-stage-worker, the peer must present a strata-stage-coordinator certificate of <certs>/ca.crt
+   worker: ds4 duo: prefix host, layers [0, 20); waiting on 127.0.0.1:50122 for 127.0.0.1
+   worker: ds4 duo: link up, TLSv1.3 TLS_AES_256_GCM_SHA384, peer strata-stage-coordinator verified
+   worker: ds4 duo: the suffix host is connected
+   worker: duo prefix: 33 windows; 5 ms sending the hand-offs (0.14 ms a window)
+   coord:  ds4 duo: link mode TLS 1.3, mutual authentication: this host is strata-stage-coordinator, the peer must present a strata-stage-worker certificate of <certs>/ca.crt
+   coord:  ds4 duo: link up, TLSv1.3 TLS_AES_256_GCM_SHA384, peer strata-stage-worker verified
+   coord:  ds4 duo: suffix host, layers [20, 40) + head; prefix host 127.0.0.1:50122 holds [0, 20)
+   coord:  duo suffix: 33 windows; waited 4523 ms for the prefix host's hand-offs (137.1 ms a window: its layers and the link)
+   coord:  decode: 32 tokens in 6681 ms (4.64 tok/s); CPU lane: 3720 of 3720 experts, streamed to the GPU: 0; the cache moved 0 (0 in all)
+   coord:  "rc": 0, "ids_sha": "136cfb473f3e2b0c",
+== plain3: worker exit 0
+   worker: ds4 duo: link mode INSECURE (--duo-insecure): plain TCP, token ids and activations unencrypted, the peer known by its source address only
+   worker: ds4 duo: prefix host, layers [0, 20); waiting on 127.0.0.1:50121 for 127.0.0.1
+   worker: ds4 duo: the suffix host is connected
+   worker: duo prefix: 33 windows; 2 ms sending the hand-offs (0.06 ms a window)
+   coord:  ds4 duo: link mode INSECURE (--duo-insecure): plain TCP, token ids and activations unencrypted, the peer known by its source address only
+   coord:  ds4 duo: suffix host, layers [20, 40) + head; prefix host 127.0.0.1:50121 holds [0, 20)
+   coord:  duo suffix: 33 windows; waited 6146 ms for the prefix host's hand-offs (186.2 ms a window: its layers and the link)
+   coord:  decode: 32 tokens in 8524 ms (3.64 tok/s); CPU lane: 3720 of 3720 experts, streamed to the GPU: 0; the cache moved 0 (0 in all)
+   coord:  "rc": 0, "ids_sha": "136cfb473f3e2b0c",
+== tls3: worker exit 0
+   worker: ds4 duo: link mode TLS 1.3, mutual authentication: this host is strata-stage-worker, the peer must present a strata-stage-coordinator certificate of <certs>/ca.crt
+   worker: ds4 duo: prefix host, layers [0, 20); waiting on 127.0.0.1:50122 for 127.0.0.1
+   worker: ds4 duo: link up, TLSv1.3 TLS_AES_256_GCM_SHA384, peer strata-stage-coordinator verified
+   worker: ds4 duo: the suffix host is connected
+   worker: duo prefix: 33 windows; 4 ms sending the hand-offs (0.13 ms a window)
+   coord:  ds4 duo: link mode TLS 1.3, mutual authentication: this host is strata-stage-coordinator, the peer must present a strata-stage-worker certificate of <certs>/ca.crt
+   coord:  ds4 duo: link up, TLSv1.3 TLS_AES_256_GCM_SHA384, peer strata-stage-worker verified
+   coord:  ds4 duo: suffix host, layers [20, 40) + head; prefix host 127.0.0.1:50122 holds [0, 20)
+   coord:  duo suffix: 33 windows; waited 3626 ms for the prefix host's hand-offs (109.9 ms a window: its layers and the link)
+   coord:  decode: 32 tokens in 5082 ms (6.10 tok/s); CPU lane: 3720 of 3720 experts, streamed to the GPU: 0; the cache moved 0 (0 in all)
+   coord:  "rc": 0, "ids_sha": "136cfb473f3e2b0c",
+== plain4: worker exit 0
+   worker: ds4 duo: link mode INSECURE (--duo-insecure): plain TCP, token ids and activations unencrypted, the peer known by its source address only
+   worker: ds4 duo: prefix host, layers [0, 20); waiting on 127.0.0.1:50121 for 127.0.0.1
+   worker: ds4 duo: the suffix host is connected
+   worker: duo prefix: 33 windows; 2 ms sending the hand-offs (0.06 ms a window)
+   coord:  ds4 duo: link mode INSECURE (--duo-insecure): plain TCP, token ids and activations unencrypted, the peer known by its source address only
+   coord:  ds4 duo: suffix host, layers [20, 40) + head; prefix host 127.0.0.1:50121 holds [0, 20)
+   coord:  duo suffix: 33 windows; waited 3542 ms for the prefix host's hand-offs (107.3 ms a window: its layers and the link)
+   coord:  decode: 32 tokens in 5023 ms (6.17 tok/s); CPU lane: 3720 of 3720 experts, streamed to the GPU: 0; the cache moved 0 (0 in all)
+   coord:  "rc": 0, "ids_sha": "136cfb473f3e2b0c",
+== tls4: worker exit 0
+   worker: ds4 duo: link mode TLS 1.3, mutual authentication: this host is strata-stage-worker, the peer must present a strata-stage-coordinator certificate of <certs>/ca.crt
+   worker: ds4 duo: prefix host, layers [0, 20); waiting on 127.0.0.1:50122 for 127.0.0.1
+   worker: ds4 duo: link up, TLSv1.3 TLS_AES_256_GCM_SHA384, peer strata-stage-coordinator verified
+   worker: ds4 duo: the suffix host is connected
+   worker: duo prefix: 33 windows; 4 ms sending the hand-offs (0.13 ms a window)
+   coord:  ds4 duo: link mode TLS 1.3, mutual authentication: this host is strata-stage-coordinator, the peer must present a strata-stage-worker certificate of <certs>/ca.crt
+   coord:  ds4 duo: link up, TLSv1.3 TLS_AES_256_GCM_SHA384, peer strata-stage-worker verified
+   coord:  ds4 duo: suffix host, layers [20, 40) + head; prefix host 127.0.0.1:50122 holds [0, 20)
+   coord:  duo suffix: 33 windows; waited 3609 ms for the prefix host's hand-offs (109.4 ms a window: its layers and the link)
+   coord:  decode: 32 tokens in 5264 ms (5.89 tok/s); CPU lane: 3720 of 3720 experts, streamed to the GPU: 0; the cache moved 0 (0 in all)
+   coord:  "rc": 0, "ids_sha": "136cfb473f3e2b0c",
+== plain5: worker exit 0
+   worker: ds4 duo: link mode INSECURE (--duo-insecure): plain TCP, token ids and activations unencrypted, the peer known by its source address only
+   worker: ds4 duo: prefix host, layers [0, 20); waiting on 127.0.0.1:50121 for 127.0.0.1
+   worker: ds4 duo: the suffix host is connected
+   worker: duo prefix: 33 windows; 2 ms sending the hand-offs (0.06 ms a window)
+   coord:  ds4 duo: link mode INSECURE (--duo-insecure): plain TCP, token ids and activations unencrypted, the peer known by its source address only
+   coord:  ds4 duo: suffix host, layers [20, 40) + head; prefix host 127.0.0.1:50121 holds [0, 20)
+   coord:  duo suffix: 33 windows; waited 4666 ms for the prefix host's hand-offs (141.4 ms a window: its layers and the link)
+   coord:  decode: 32 tokens in 5990 ms (5.18 tok/s); CPU lane: 3720 of 3720 experts, streamed to the GPU: 0; the cache moved 0 (0 in all)
+   coord:  "rc": 0, "ids_sha": "136cfb473f3e2b0c",
+== tls5: worker exit 0
+   worker: ds4 duo: link mode TLS 1.3, mutual authentication: this host is strata-stage-worker, the peer must present a strata-stage-coordinator certificate of <certs>/ca.crt
+   worker: ds4 duo: prefix host, layers [0, 20); waiting on 127.0.0.1:50122 for 127.0.0.1
+   worker: ds4 duo: link up, TLSv1.3 TLS_AES_256_GCM_SHA384, peer strata-stage-coordinator verified
+   worker: ds4 duo: the suffix host is connected
+   worker: duo prefix: 33 windows; 5 ms sending the hand-offs (0.16 ms a window)
+   coord:  ds4 duo: link mode TLS 1.3, mutual authentication: this host is strata-stage-coordinator, the peer must present a strata-stage-worker certificate of <certs>/ca.crt
+   coord:  ds4 duo: link up, TLSv1.3 TLS_AES_256_GCM_SHA384, peer strata-stage-worker verified
+   coord:  ds4 duo: suffix host, layers [20, 40) + head; prefix host 127.0.0.1:50122 holds [0, 20)
+   coord:  duo suffix: 33 windows; waited 5574 ms for the prefix host's hand-offs (168.9 ms a window: its layers and the link)
+   coord:  decode: 32 tokens in 7487 ms (4.14 tok/s); CPU lane: 3720 of 3720 experts, streamed to the GPU: 0; the cache moved 0 (0 in all)
+   coord:  "rc": 0, "ids_sha": "136cfb473f3e2b0c",
+== offbuild1: worker exit 0
+   worker: ds4 duo: link mode INSECURE (--duo-insecure): plain TCP, token ids and activations unencrypted, the peer known by its source address only
+   worker: ds4 duo: prefix host, layers [0, 20); waiting on 127.0.0.1:50123 for 127.0.0.1
+   worker: ds4 duo: the suffix host is connected
+   worker: duo prefix: 33 windows; 2 ms sending the hand-offs (0.06 ms a window)
+   coord:  ds4 duo: link mode INSECURE (--duo-insecure): plain TCP, token ids and activations unencrypted, the peer known by its source address only
+   coord:  ds4 duo: suffix host, layers [20, 40) + head; prefix host 127.0.0.1:50123 holds [0, 20)
+   coord:  duo suffix: 33 windows; waited 4896 ms for the prefix host's hand-offs (148.4 ms a window: its layers and the link)
+   coord:  decode: 32 tokens in 6363 ms (4.87 tok/s); CPU lane: 3720 of 3720 experts, streamed to the GPU: 0; the cache moved 0 (0 in all)
+   coord:  "rc": 0, "ids_sha": "136cfb473f3e2b0c",
+== offbuild2: worker exit 0
+   worker: ds4 duo: link mode INSECURE (--duo-insecure): plain TCP, token ids and activations unencrypted, the peer known by its source address only
+   worker: ds4 duo: prefix host, layers [0, 20); waiting on 127.0.0.1:50123 for 127.0.0.1
+   worker: ds4 duo: the suffix host is connected
+   worker: duo prefix: 33 windows; 2 ms sending the hand-offs (0.06 ms a window)
+   coord:  ds4 duo: link mode INSECURE (--duo-insecure): plain TCP, token ids and activations unencrypted, the peer known by its source address only
+   coord:  ds4 duo: suffix host, layers [20, 40) + head; prefix host 127.0.0.1:50123 holds [0, 20)
+   coord:  duo suffix: 33 windows; waited 6351 ms for the prefix host's hand-offs (192.5 ms a window: its layers and the link)
+   coord:  decode: 32 tokens in 8667 ms (3.58 tok/s); CPU lane: 3720 of 3720 experts, streamed to the GPU: 0; the cache moved 0 (0 in all)
+   coord:  "rc": 0, "ids_sha": "136cfb473f3e2b0c",

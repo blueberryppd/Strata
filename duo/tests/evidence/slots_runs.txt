@@ -1,0 +1,169 @@
+== s_inter  mode=single scenario=inter keep=True link=--duo-insecure exe=duo-slots rc=[0, None] all_sha=839fb521ee02871e
+   A1                                               prompt  1400 reused     0 prompt_ms   13088.2 ids_sha 336324f522215f99
+        NOTE sessions: folder slots/s_inter: 0 conversation(s) kept from earlier runs (0.00 GB)
+   B1                                               prompt  1300 reused     0 prompt_ms    7322.3 ids_sha e271c47da76da9ac
+   A2 continues A                                   prompt  2126 reused  1423 prompt_ms    4065.0 ids_sha 5c7850b836eb024d
+        NOTE sessions: took back a 1423-token conversation from RAM (0.0 s); 703 new tokens to read
+   B2 continues B                                   prompt  1333 reused  1323 prompt_ms    2766.2 ids_sha 03a3841b296bd9bc
+        NOTE sessions: took back a 1323-token conversation from RAM (0.0 s); 10 new tokens to read
+   A3 leaves A at 1000                              prompt  1314 reused  1000 prompt_ms    3227.7 ids_sha 8a4b0d5c1a498666
+        NOTE sessions: took back a 1000-token conversation at token 1000 of 2149 from RAM (0.0 s); 314 new tokens to read
+   B3 continues B                                   prompt  1360 reused  1350 prompt_ms    2971.5 ids_sha c37c300e2542079d
+        NOTE sessions: took back a 1350-token conversation from RAM (0.0 s); 10 new tokens to read
+   slot files (bytes, sha256[:16]): [[15626361, "2d595936e33d58f1"], [14876073, "d99a8aafb136707e"], [12170297, "a906b53c3c97bd07"]]
+== d_inter  mode=duo scenario=inter keep=True link=--duo-insecure exe=duo-slots rc=[0, 0] all_sha=8dc060273468d43c
+   A1                                               prompt  1400 reused     0 prompt_ms   17412.5 ids_sha b83391ef34c7788e
+        NOTE sessions: folder slots/d_inter: 0 conversation(s) kept from earlier runs (0.00 GB)
+   B1                                               prompt  1300 reused     0 prompt_ms   12164.2 ids_sha 6411adfcf0be7b24
+   A2 continues A                                   prompt  2126 reused  1423 prompt_ms  119646.9 ids_sha 6b86b273ff34fce1
+        NOTE sessions: took back a 1423-token conversation from RAM (0.1 s); 703 new tokens to read
+   B2 continues B                                   prompt  1315 reused  1305 prompt_ms    8066.7 ids_sha b5067f015c0a0e61
+        NOTE sessions: took back a 1305-token conversation from RAM (0.1 s); 10 new tokens to read
+   A3 leaves A at 1000                              prompt  1314 reused  1000 prompt_ms    7658.3 ids_sha 8a4b0d5c1a498666
+        NOTE sessions: took back a 1000-token conversation at token 1000 of 2126 from RAM (0.0 s); 314 new tokens to read
+   B3 continues B                                   prompt  1348 reused  1338 prompt_ms    3583.2 ids_sha c37c300e2542079d
+        NOTE sessions: took back a 1338-token conversation from RAM (0.1 s); 10 new tokens to read
+   slot files (bytes, sha256[:16]): [[15615824, "c696a0a6f47f1516"], [14883080, "e412594ed620f39d"], [12166248, "0681ff1956dea5d9"]]
+== d_inter  mode=duo scenario=inter keep=True link=--duo-insecure exe=duo-slots rc=[0, 0] all_sha=839fb521ee02871e
+   A1                                               prompt  1400 reused     0 prompt_ms   12438.7 ids_sha 336324f522215f99
+        NOTE sessions: folder slots/d_inter: 0 conversation(s) kept from earlier runs (0.00 GB)
+   B1                                               prompt  1300 reused     0 prompt_ms    5812.4 ids_sha e271c47da76da9ac
+   A2 continues A                                   prompt  2126 reused  1423 prompt_ms    3505.8 ids_sha 5c7850b836eb024d
+        NOTE sessions: took back a 1423-token conversation from RAM (0.0 s); 703 new tokens to read
+   B2 continues B                                   prompt  1333 reused  1323 prompt_ms    1807.2 ids_sha 03a3841b296bd9bc
+        NOTE sessions: took back a 1323-token conversation from RAM (0.0 s); 10 new tokens to read
+   A3 leaves A at 1000                              prompt  1314 reused  1000 prompt_ms    2242.0 ids_sha 8a4b0d5c1a498666
+        NOTE sessions: took back a 1000-token conversation at token 1000 of 2149 from RAM (0.0 s); 314 new tokens to read
+   B3 continues B                                   prompt  1360 reused  1350 prompt_ms    1329.5 ids_sha c37c300e2542079d
+        NOTE sessions: took back a 1350-token conversation from RAM (0.0 s); 10 new tokens to read
+   slot files (bytes, sha256[:16]): [[15636616, "9ea298470c202eb4"], [14883080, "e412594ed620f39d"], [12177384, "dcc94f9ca351fd6e"]]
+== s_long  mode=single scenario=inter keep=True link=--duo-insecure exe=duo-slots rc=[0, None] all_sha=195f245787dcc4ec
+   A1                                               prompt  3500 reused     0 prompt_ms   12550.4 ids_sha b0c5a9d6c2f6ca9a
+        NOTE sessions: folder slots/s_long: 0 conversation(s) kept from earlier runs (0.00 GB)
+   B1                                               prompt  3200 reused     0 prompt_ms    9242.6 ids_sha 0e6d4ed25576083d
+   A2 continues A                                   prompt  4226 reused  3523 prompt_ms    3110.8 ids_sha 8a1100a6db1115a2
+        NOTE sessions: took back a 3523-token conversation from RAM (0.0 s); 703 new tokens to read
+   B2 continues B                                   prompt  3233 reused  3223 prompt_ms    1609.9 ids_sha 8c2fba6898c6acbd
+        NOTE sessions: took back a 3223-token conversation from RAM (0.0 s); 10 new tokens to read
+   A3 leaves A at 2500                              prompt  2814 reused  2500 prompt_ms    2065.9 ids_sha 43d271f8ea69f6cf
+        NOTE sessions: took back a 2500-token conversation at token 2500 of 4249 from RAM (0.0 s); 314 new tokens to read
+   B3 continues B                                   prompt  3264 reused  3254 prompt_ms    1200.5 ids_sha c37c300e2542079d
+        NOTE sessions: took back a 3254-token conversation from RAM (0.0 s); 10 new tokens to read
+   slot files (bytes, sha256[:16]): [[17566761, "f0a01cdfd19fb99f"], [16262073, "72d998e8875274f5"], [13929593, "82ef0c4d9a3b67e3"]]
+   swap MB / engines' peak memory MB: {"before": 22181.75, "peak": 22190.94, "after": 22190.94}
+== d_long  mode=duo scenario=inter keep=True link=--duo-insecure exe=duo-slots rc=[0, 0] all_sha=195f245787dcc4ec
+   A1                                               prompt  3500 reused     0 prompt_ms   13208.8 ids_sha b0c5a9d6c2f6ca9a
+        NOTE sessions: folder slots/d_long: 0 conversation(s) kept from earlier runs (0.00 GB)
+   B1                                               prompt  3200 reused     0 prompt_ms    9565.9 ids_sha 0e6d4ed25576083d
+   A2 continues A                                   prompt  4226 reused  3523 prompt_ms    3315.9 ids_sha 8a1100a6db1115a2
+        NOTE sessions: took back a 3523-token conversation from RAM (0.0 s); 703 new tokens to read
+   B2 continues B                                   prompt  3233 reused  3223 prompt_ms    1575.8 ids_sha 8c2fba6898c6acbd
+        NOTE sessions: took back a 3223-token conversation from RAM (0.0 s); 10 new tokens to read
+   A3 leaves A at 2500                              prompt  2814 reused  2500 prompt_ms    2293.6 ids_sha 43d271f8ea69f6cf
+        NOTE sessions: took back a 2500-token conversation at token 2500 of 4249 from RAM (0.0 s); 314 new tokens to read
+   B3 continues B                                   prompt  3264 reused  3254 prompt_ms    1249.7 ids_sha c37c300e2542079d
+        NOTE sessions: took back a 3254-token conversation from RAM (0.0 s); 10 new tokens to read
+   slot files (bytes, sha256[:16]): [[17585416, "7cd7e931e97787fe"], [16275080, "d0684a2b77deb2c0"], [13944296, "0e2f907025eae73f"]]
+   swap MB / engines' peak memory MB: {"before": 22182.94, "peak": 23790.25, "after": 23790.25}
+== d_persist1  mode=duo scenario=persist1 keep=True link=--duo-insecure exe=duo-slots rc=[0, 0] all_sha=25d082fac824cdca
+   A1                                               prompt  1400 reused     0 prompt_ms    6493.2 ids_sha 336324f522215f99
+        NOTE sessions: folder slots/d_persist1: 0 conversation(s) kept from earlier runs (0.00 GB)
+   slot files (bytes, sha256[:16]): [[14962888, "2fc1e70cb44a2af1"]]
+   swap MB / engines' peak memory MB: {"before": 23502.25, "peak": 23502.25, "after": 23502.25, "engine_mem_peak_mb": [8416, 7857]}
+== d_persist2  mode=duo scenario=persist2 keep=True link=--duo-insecure exe=duo-slots rc=[0, 0] all_sha=f52491c764bb18cd
+   A2 continues A (fresh engine)                    prompt  2126 reused  1423 prompt_ms    3727.0 ids_sha 5c7850b836eb024d
+        NOTE sessions: folder slots/d_persist1: 1 conversation(s) kept from earlier runs (0.01 GB)
+        NOTE sessions: took back a 1423-token conversation from the folder (0.0 s); 703 new tokens to read
+   A3 leaves A at 1000                              prompt  1314 reused  1000 prompt_ms    2534.5 ids_sha 8a4b0d5c1a498666
+   slot files (bytes, sha256[:16]): [[15636616, "9ea298470c202eb4"], [14883080, "e412594ed620f39d"]]
+   swap MB / engines' peak memory MB: {"before": 23430.25, "peak": 23430.25, "after": 23422.25, "engine_mem_peak_mb": [6919, 6232]}
+== s_persist1  mode=single scenario=persist1 keep=True link=--duo-insecure exe=duo-slots rc=[0, None] all_sha=25d082fac824cdca
+   A1                                               prompt  1400 reused     0 prompt_ms    5757.7 ids_sha 336324f522215f99
+        NOTE sessions: folder slots/s_persist1: 0 conversation(s) kept from earlier runs (0.00 GB)
+   slot files (bytes, sha256[:16]): [[14955537, "ad4e7e04f9cff395"]]
+   swap MB / engines' peak memory MB: {"before": 23422.25, "peak": 23422.25, "after": 23414.25, "engine_mem_peak_mb": [11264]}
+== s_persist2  mode=single scenario=persist2 keep=True link=--duo-insecure exe=duo-slots rc=[0, None] all_sha=f52491c764bb18cd
+   A2 continues A (fresh engine)                    prompt  2126 reused  1423 prompt_ms    3268.2 ids_sha 5c7850b836eb024d
+        NOTE sessions: folder slots/s_persist1: 1 conversation(s) kept from earlier runs (0.01 GB)
+        NOTE sessions: took back a 1423-token conversation from the folder (0.0 s); 703 new tokens to read
+   A3 leaves A at 1000                              prompt  1314 reused  1000 prompt_ms    2470.5 ids_sha 8a4b0d5c1a498666
+   slot files (bytes, sha256[:16]): [[15626361, "2d595936e33d58f1"], [14876073, "d99a8aafb136707e"]]
+   swap MB / engines' peak memory MB: {"before": 23414.25, "peak": 23414.25, "after": 23414.25, "engine_mem_peak_mb": [9540]}
+== base_persist1  mode=single scenario=persist1 keep=True link=--duo-insecure exe=base 59c4d4d rc=[0, None] all_sha=25d082fac824cdca
+   A1                                               prompt  1400 reused     0 prompt_ms   10013.4 ids_sha 336324f522215f99
+        NOTE sessions: folder slots/base_persist1: 0 conversation(s) kept from earlier runs (0.00 GB)
+   slot files (bytes, sha256[:16]): [[14955537, "ad4e7e04f9cff395"]]
+   swap MB / engines' peak memory MB: {"before": 23406.25, "peak": 23406.25, "after": 23398.25, "engine_mem_peak_mb": [11264]}
+== d_neg  mode=duo scenario=cont keep=True link=--duo-insecure exe=duo-slots rc=[0, 0] all_sha=e96f639afa78afaa
+   continues slot-1794485565445-1.meta (2149 tokens) prompt  2158 reused     0 prompt_ms    8713.4 ids_sha f82631bb40506fc3
+        NOTE sessions: folder slots/neg_duo: 2 conversation(s) kept from earlier runs (0.03 GB), 1 not this model's or incomplete - removed
+        NOTE sessions: taking a conversation back failed (one host's conversation, not a Strata Duo pair's (it holds every layer in one piece; this pair is cut at layer 20)) - reading its prompt again
+   continues slot-1794485528344-2.meta (1337 tokens) prompt  1346 reused     0 prompt_ms    5149.9 ids_sha 7b0b4b936ccd2316
+        NOTE sessions: taking a conversation back failed (a Strata Duo conversation cut at layer 19 of 40: this pair is cut at layer 20 of 40) - reading its prompt again
+   slot files (bytes, sha256[:16]): [[12923496, "4bd3340652ea3855"], [12184808, "db5b5b74e95bb919"]]
+   swap MB / engines' peak memory MB: {"before": 23398.25, "peak": 23398.25, "after": 23326.25, "engine_mem_peak_mb": [8738, 7884]}
+== s_neg  mode=single scenario=cont keep=True link=--duo-insecure exe=duo-slots rc=[0, None] all_sha=8d6f0281da9c85fd
+   continues slot-1794485565445-1.meta (2149 tokens) prompt  2158 reused     0 prompt_ms    7983.7 ids_sha f82631bb40506fc3
+        NOTE sessions: folder slots/neg_single: 1 conversation(s) kept from earlier runs (0.02 GB), 1 not this model's or incomplete - removed
+        NOTE sessions: taking a conversation back failed (a Strata Duo conversation (the halves of two hosts), not one host's) - reading its prompt again
+   slot files (bytes, sha256[:16]): [[12913193, "5f168ab8b601eca6"]]
+   swap MB / engines' peak memory MB: {"before": 23326.25, "peak": 23326.25, "after": 23326.25, "engine_mem_peak_mb": [11264]}
+== d_fail1  mode=duo scenario=fail keep=True link=--duo-insecure exe=duo-slots rc=[0, 0] all_sha=48d313f3e99d7249
+   A1                                               prompt  1400 reused     0 prompt_ms    6491.7 ids_sha 336324f522215f99
+        NOTE sessions: folder slots/d_fail1: 0 conversation(s) kept from earlier runs (0.00 GB)
+   B1                                               prompt  1300 reused     0 prompt_ms    5032.8 ids_sha e271c47da76da9ac
+   A2 continues A                                   prompt  2126 reused     0 prompt_ms    8077.8 ids_sha 21196f66c6dc5032
+   B2 continues B                                   prompt  1333 reused     0 prompt_ms    5364.9 ids_sha 03a3841b296bd9bc
+   swap MB / engines' peak memory MB: {"before": 23326.25, "peak": 24018.12, "after": 24018.12, "engine_mem_peak_mb": [8872, 8405]}
+== d_fail2  mode=duo scenario=fail keep=True link=--duo-insecure exe=duo-slots rc=[0, 0] all_sha=48d313f3e99d7249
+   A1                                               prompt  1400 reused     0 prompt_ms    6383.1 ids_sha 336324f522215f99
+        NOTE sessions: folder slots/d_fail2: 0 conversation(s) kept from earlier runs (0.00 GB)
+   B1                                               prompt  1300 reused     0 prompt_ms    4869.1 ids_sha e271c47da76da9ac
+   A2 continues A                                   prompt  2126 reused     0 prompt_ms    7992.1 ids_sha 21196f66c6dc5032
+        NOTE sessions: taking a conversation back failed (duo: the prefix host: DS4_DUO_SLOT_TEST=2: the half is refused) - reading its prompt again
+   B2 continues B                                   prompt  1333 reused     0 prompt_ms    5424.7 ids_sha 03a3841b296bd9bc
+        NOTE sessions: taking a conversation back failed (duo: the prefix host: DS4_DUO_SLOT_TEST=2: the half is refused) - reading its prompt again
+   slot files (bytes, sha256[:16]): [[12908648, "480a38a42a4e59aa"], [12167728, "ac80d016cf0820c9"]]
+   swap MB / engines' peak memory MB: {"before": 24018.12, "peak": 24439.88, "after": 24439.88, "engine_mem_peak_mb": [8869, 8324]}
+== d_fail3  mode=duo scenario=fail keep=True link=--duo-insecure exe=duo-slots rc=[0, 0] all_sha=48d313f3e99d7249
+   A1                                               prompt  1400 reused     0 prompt_ms    6445.6 ids_sha 336324f522215f99
+        NOTE sessions: folder slots/d_fail3: 0 conversation(s) kept from earlier runs (0.00 GB)
+   B1                                               prompt  1300 reused     0 prompt_ms    4925.4 ids_sha e271c47da76da9ac
+   A2 continues A                                   prompt  2126 reused     0 prompt_ms    8058.2 ids_sha 21196f66c6dc5032
+        NOTE sessions: taking a conversation back failed (duo: the prefix host: the slot does not end where it should) - reading its prompt again
+   B2 continues B                                   prompt  1333 reused     0 prompt_ms    5493.9 ids_sha 03a3841b296bd9bc
+        NOTE sessions: taking a conversation back failed (duo: the prefix host: the slot does not end where it should) - reading its prompt again
+   slot files (bytes, sha256[:16]): [[12908648, "480a38a42a4e59aa"], [12167728, "ac80d016cf0820c9"]]
+   swap MB / engines' peak memory MB: {"before": 24215.88, "peak": 24215.88, "after": 24199.88, "engine_mem_peak_mb": [8868, 8288]}
+== s_noslots  mode=single scenario=fail keep=False link=--duo-insecure exe=duo-slots rc=[0, None] all_sha=48d313f3e99d7249
+   A1                                               prompt  1400 reused     0 prompt_ms    5653.8 ids_sha 336324f522215f99
+   B1                                               prompt  1300 reused     0 prompt_ms    4495.7 ids_sha e271c47da76da9ac
+   A2 continues A                                   prompt  2126 reused     0 prompt_ms    6529.5 ids_sha 21196f66c6dc5032
+   B2 continues B                                   prompt  1333 reused     0 prompt_ms    3983.8 ids_sha 03a3841b296bd9bc
+   swap MB / engines' peak memory MB: {"before": 24199.88, "peak": 24199.88, "after": 24199.88, "engine_mem_peak_mb": [11264]}
+== d_inter_tls  mode=duo scenario=inter keep=True link=--duo-certs exe=duo-slots rc=[0, 0] all_sha=839fb521ee02871e
+   A1                                               prompt  1400 reused     0 prompt_ms    6364.5 ids_sha 336324f522215f99
+        NOTE sessions: folder slots/d_inter_tls: 0 conversation(s) kept from earlier runs (0.00 GB)
+   B1                                               prompt  1300 reused     0 prompt_ms    4926.1 ids_sha e271c47da76da9ac
+   A2 continues A                                   prompt  2126 reused  1423 prompt_ms    3180.2 ids_sha 5c7850b836eb024d
+        NOTE sessions: took back a 1423-token conversation from RAM (0.0 s); 703 new tokens to read
+   B2 continues B                                   prompt  1333 reused  1323 prompt_ms    1545.0 ids_sha 03a3841b296bd9bc
+        NOTE sessions: took back a 1323-token conversation from RAM (0.0 s); 10 new tokens to read
+   A3 leaves A at 1000                              prompt  1314 reused  1000 prompt_ms    2250.7 ids_sha 8a4b0d5c1a498666
+        NOTE sessions: took back a 1000-token conversation at token 1000 of 2149 from RAM (0.0 s); 314 new tokens to read
+   B3 continues B                                   prompt  1360 reused  1350 prompt_ms    1177.7 ids_sha c37c300e2542079d
+        NOTE sessions: took back a 1350-token conversation from RAM (0.0 s); 10 new tokens to read
+   slot files (bytes, sha256[:16]): [[15636616, "9ea298470c202eb4"], [14883080, "e412594ed620f39d"], [12177384, "dcc94f9ca351fd6e"]]
+   swap MB / engines' peak memory MB: {"before": 24199.88, "peak": 24199.88, "after": 24183.88, "engine_mem_peak_mb": [7899, 7864]}
+== s_shared  mode=single scenario=shared keep=False link=--duo-insecure exe=duo-slots rc=[0, None] all_sha=6853774fbe21d470
+   C1 shared=1100                                   prompt  1500 reused     0 prompt_ms    5603.7 ids_sha 8a4b0d5c1a498666
+   D1 unrelated                                     prompt  1300 reused     0 prompt_ms    4440.7 ids_sha e271c47da76da9ac
+   E1 behind C's start                              prompt  1414 reused  1100 prompt_ms    2253.6 ids_sha 8a4b0d5c1a498666
+   E2 continues E                                   prompt  1447 reused  1437 prompt_ms    1185.6 ids_sha 2d4f4ce93a8f5376
+   swap MB / engines' peak memory MB: {"before": 24183.88, "peak": 24183.88, "after": 24167.88, "engine_mem_peak_mb": [11264]}
+== d_shared  mode=duo scenario=shared keep=False link=--duo-insecure exe=duo-slots rc=[0, 0] all_sha=6853774fbe21d470
+   C1 shared=1100                                   prompt  1500 reused     0 prompt_ms    6373.0 ids_sha 8a4b0d5c1a498666
+   D1 unrelated                                     prompt  1300 reused     0 prompt_ms    4807.2 ids_sha e271c47da76da9ac
+   E1 behind C's start                              prompt  1414 reused  1100 prompt_ms    2342.7 ids_sha 8a4b0d5c1a498666
+   E2 continues E                                   prompt  1447 reused  1437 prompt_ms    1737.6 ids_sha 2d4f4ce93a8f5376
+   swap MB / engines' peak memory MB: {"before": 24167.88, "peak": 24167.88, "after": 24167.88, "engine_mem_peak_mb": [8168, 7906]}

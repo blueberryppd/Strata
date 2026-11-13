@@ -1,0 +1,6 @@
+plain: 5000 round trips (36 B out, 94240 B back): median 36.2 us, p90 42.3 us, p99 59.5 us, min 23.5 us
+TLS: 5000 round trips (36 B out, 94240 B back): median 52.8 us, p90 59.6 us, p99 68.2 us, min 47.2 us
+plain: 5000 round trips (36 B out, 94240 B back): median 36.4 us, p90 43.3 us, p99 110.0 us, min 23.4 us
+TLS: 5000 round trips (36 B out, 94240 B back): median 52.6 us, p90 58.2 us, p99 67.8 us, min 46.5 us
+plain: 5000 round trips (36 B out, 94240 B back): median 36.3 us, p90 42.2 us, p99 91.0 us, min 25.7 us
+TLS: 5000 round trips (36 B out, 94240 B back): median 52.3 us, p90 58.0 us, p99 67.4 us, min 46.9 us
