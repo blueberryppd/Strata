@@ -274,8 +274,10 @@ Both engines, the server and the gate end. Nothing loads by itself until the nex
 | Have the gate come back after a login | install the LaunchAgent: [`duo/launchd/README.md`](../duo/launchd/README.md) |
 
 While the service is on, the pair is unloaded after `IDLE_MIN` idle minutes and both Macs get their memory back. The
-next request loads it again and is answered after about a minute. If either Mac restarts or the link drops, the
-engines end; the next request through the gate starts the pair again. (If it was this Mac that restarted, the gate
+next request loads it again and is answered after one to two minutes. If either Mac restarts or the link drops, the
+engines end; the next request through the gate starts the pair again. A request that was being answered at that
+moment ends with an error that says its answer is incomplete: send it again. `duo.sh stop`, `down` and `restart`
+let the engine save the open conversation first, so it is not read again from the start afterwards. (If it was this Mac that restarted, the gate
 itself has to come back first: run `duo/duo.sh start`, or install the LaunchAgent.)
 
 Files in `duo/run/` on this Mac (none are tracked by git): `api_key`, `api_auth.hdr`, `gate.log`, `prefix.log`,
@@ -379,6 +381,28 @@ Method: 5 to 8 mixed English and Chinese prompts, 400 generated tokens each, tem
 
 RDMA was not implemented, because the link is not the bottleneck.
 
+**The published tree, measured again.** The rows above were measured with the development scripts, before the
+pre-release review. After the review's fixes, the code of this branch was installed on the same two Macs by
+following this document from step 4 (clone, `build.sh` on each Mac, `gen_certs.sh`, `duo.conf`, `doctor`, `start`)
+and measured again with 2.25 bpw:
+
+| Measurement | Result |
+|---|---|
+| `duo.sh start`, gate and pair | 76 s |
+| Speed, 5 rounds of 400 tokens | 12.06 tokens/s (range 11.5-12.3) |
+| Reading a new 12,799-token prompt | 22.8 s |
+| Returning to a parked 7,600-token conversation | 2.3-2.5 s |
+| The same conversation after `duo.sh restart` (from disk) | 3.1 s |
+| Answers at temperature 0, against the engine before the fixes | the same text for all six answers of two passes after a fresh start |
+| `kill -9` of the suffix engine | the prefix engine ended within 2 s; the next request was answered after 77 s |
+| `kill -9` of the prefix engine while idle | the next request was answered after 68 s (the idle suffix engine notices at its next call) |
+| `kill -9` of the prefix engine in the middle of an answer | that request ends with an error that says the answer is incomplete; the suffix engine ends; the next request loads the pair |
+| The ssh session that carries the server cut | the next request was answered after 110 s |
+| `POST /duo/unload`, then a request | unloaded in 2 s; answered after 68-110 s |
+
+Not measured: a cable pulled or a Mac powered off while the pair runs. On one machine a stopped process cannot stand
+in for that (the kernel goes on answering keepalive probes), so the 30-second detection is by design, not by test.
+
 Correctness: with every routed expert on the CPU lane (`--vram-experts 0.0`), a split run on one machine is
 token-identical to the unsplit engine. This holds on the windowed path by default, and on the chunked path with
 `DS4_SUM_BY_EXPERT=1 DS4_SPEC_WASTE=1e9` (which fix the order of the floating-point sums).
@@ -393,9 +417,10 @@ token-identical to the unsplit engine. This holds on the windowed path by defaul
 - links other than Thunderbolt.
 
 Also not tested, concerning the tools in this branch: the scripts in `duo/` are a generic rework of the scripts the
-measurements were made with. The reworked `duo.sh` was exercised with stand-ins on one Mac
-(`duo/tests/duo_sh_selftest.sh`) but **not yet on two real Macs**; `LOCAL_ROLE=suffix` has never been run on real
-hardware in this form; starting the gate from launchd and a start after a full reboot were not tested.
+first measurements were made with. They were run on the two real Macs in the measured layout (see "The published
+tree, measured again"); `LOCAL_ROLE=suffix` has never been run on real hardware in this form; starting the gate from
+launchd and a start after a full reboot were not tested; the engine loopback tests in `duo/tests` were not run again
+after the review's fixes.
 
 ## Limitations
 
