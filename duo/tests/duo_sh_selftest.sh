@@ -226,12 +226,12 @@ kill -STOP "$gatepid"
 out=$(bash "$DUO" ensure 2>&1)
 expect "ensure never kills a merely slow gate" 'kill -0 "$gatepid" 2>/dev/null && printf "%s" "$out" | grep -q "leaving it alone"' "$out"
 kill -CONT "$gatepid"
-# A wrong auth header forces a failed backend probe; both engine processes must survive direct up.
+# A wrong auth header: the server answers 401, which says nothing against the pair; both engines must survive a direct up.
 cp "$RUN/api_auth.hdr" "$S/auth.saved"
 printf 'Authorization: Bearer selftest-wrong\n' > "$RUN/api_auth.hdr"
 touch -t 203001010000 "$RUN/api_auth.hdr"
 out=$(bash "$DUO" up 2>&1); rc=$?
-expect "one failed direct up probe never tears down an alive engine" '[ "$rc" = 1 ] && printf "%s" "$out" | grep -q "leaving the pair alone" && running | grep -q "strata_ds4 .*--duo-listen"' "$out"
+expect "up with a key the server refuses never tears down an alive engine" '[ "$rc" = 1 ] && printf "%s" "$out" | grep -q "the pair is left alone" && running | grep -q "strata_ds4 .*--duo-listen"' "$out"
 mv "$S/auth.saved" "$RUN/api_auth.hdr"
 out=$(ROUNDS=1 LABEL=selftest bash "$DUO" bench 2>&1)
 expect "bench: one round through the gate, one line in run/bench.jsonl" 'printf "%s\n" "$out" | grep -q "overall: " && [ "$(wc -l < "$RUN/bench.jsonl" | tr -d " ")" = 1 ]' "$out"

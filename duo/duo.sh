@@ -677,11 +677,20 @@ with open(os.path.join(run, '.duo_starting.lock'), 'a') as lockfile:
 LOCKPY
   fi
   backend_ok && { echo "already loaded"; exit 0; }
-  # A failed probe while a request is being generated is not permission to tear down a working pair. The gate
-  # counts all requests; direct up is conservative too: an alive local engine requires an explicit restart.
+  # An engine that runs while the API does not answer: one failed probe is not enough to tear a pair down (the server
+  # may be busy for a moment), so ask three more times over six seconds. Still nothing: the pair is broken (the ssh
+  # session that carries the server or the tunnel is gone, or an engine is on its way out) and is started anew.
+  # A server that answers and refuses the key is not broken: that is left alone.
+  # (The gate calls this only when no request is in flight.)
   if pgrep -U "$(id -u)" -f "$(local_engine_regex)" >/dev/null; then
-    echo "the engine is running but its API probe failed; leaving the pair alone (use restart explicitly)"
-    exit 1
+    for _ in 1 2 3; do sleep 2; backend_ok && { echo "already loaded"; exit 0; }; done
+    code=$(curl_auth -m5 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$BACKPORT/v1/models" 2>/dev/null)
+    case "$code" in
+      401|403)   # (the server is there and well: it is this Mac's key file that no longer matches)
+        echo "the server answers but refuses this Mac's API key (HTTP $code): the pair is left alone. \`duo.sh restart\` gives both Macs the key in $KEY again"
+        exit 1 ;;
+    esac
+    echo "this Mac's engine is running but the API does not answer (HTTP ${code:-000}): starting the pair anew"
   fi
   down >/dev/null
   link_ips || exit 1
