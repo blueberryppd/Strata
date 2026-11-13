@@ -74,6 +74,13 @@ struct Options {
     // --parallel: conversations held at once (1-8), each its own state - its position, tokens, checkpoints, window rings,
     // the compressors' partial groups, the compressed KV and the index keys (a full context's each); 1: as before
     int seqs = 1;
+    // Strata Duo (ds4_duo.hpp), the model over two hosts split at layer duo_cut: 0 off; 1 the prefix host (layers
+    // [0, duo_cut), binds duo_addr and admits duo_allow, serves the link: Model::duo_serve); 2 the suffix host (layers
+    // [duo_cut, nl) and the head; connects to duo_addr and repeats every state change to the prefix host)
+    int duo_role = 0;
+    int duo_cut = 0;
+    std::string duo_addr;
+    std::string duo_allow;
 };
 
 /// A picture in the prompt: its span's rows (every position of the span carries the image token), BF16 [span][dim]
@@ -278,6 +285,11 @@ public:
     void vision_idle();
     /// True when the tower holds no graphics memory between picture turns.
     bool vision_lazy() const;
+
+    /// Strata Duo's prefix host: waits for the suffix host, then runs its calls until it leaves (true) or a failure.
+    bool duo_serve(std::string& err);
+    /// Strata Duo: this host's share of the windows' time so far ("" without Duo).
+    std::string duo_report() const;
 
     void save_profile() const;
     const Stats& stats() const;

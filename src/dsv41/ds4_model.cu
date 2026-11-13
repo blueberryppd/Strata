@@ -12,6 +12,7 @@
 //   moe(x): 6 of 384 routed experts (sqrt-softplus scores, biased top-k) + the shared expert
 //   h = post * moe + comb^T h;  pre = f_pre
 // and after the last layer logits = head(rmsnorm(sum_s pre[s] h[s])).
+#include "ds4_duo.hpp"
 #include "ds4_marks.hpp"
 #include "ds4_ring_link.hpp"
 #include "ds4_launch.h"   // strata_ds4_launch: <<<>>> on CUDA and HIP, a dispatch on Metal
@@ -875,6 +876,7 @@ struct Layer {
     size_t blob = 0;                            // bytes of one expert's blob
     int n_vram = 0;
     bool cpu_only = false;   // a role's type has no device kernel: every expert of this layer is the CPU lane's
+    bool foreign = false;    // Strata Duo: the other host runs this layer (never run here, no expert of it in VRAM)
     uint8_t* vram_base = nullptr;
     std::vector<int> slot;                      // expert -> VRAM slot or -1
     std::vector<int> ram;                       // expert -> RAM-tier slot or -1 (a GGUF's in-place experts; empty: none)
@@ -3050,6 +3052,9 @@ struct Model::Impl {
                 l.nm = l.mtp ? 1 : (int) groups[(size_t) l.grp].mem.size();   // (the drafter's blocks: on the lead alone)
             }
             head_dev = L[(size_t) g.nl - 1].dev;
+            if (o.duo_role != 0)
+                for (int dl_il = 0; dl_il < g.nl; ++dl_il)
+                    L[(size_t) dl_il].foreign = o.duo_role == 1 ? dl_il >= o.duo_cut : dl_il < o.duo_cut;
             d_dev = g.n_mtp > 0 ? L[(size_t) g.nl].dev : 0;
         }
         // the dense weights (attention, the shared experts, the head) always live in VRAM - only the routed experts
@@ -5448,11 +5453,11 @@ struct Model::Impl {
                 }
             double want = 0;
             for (const Layer& l : L)
-                if (l.grp == (int) gi && !l.mtp && !l.cpu_only) want += (double) ucount(l) * l.n_exp;
+                if (l.grp == (int) gi && !l.mtp && !l.cpu_only && !l.foreign) want += (double) ucount(l) * l.n_exp;
             const double frac = want > 0 ? std::min(1.0, std::max(0.0, budget_t) / want) : 0.0;
             for (Layer& l : L) {
                 if (l.grp != (int) gi || l.mtp) continue;
-                if (l.cpu_only) {   // (its type has no device kernel: the CPU lane reads every expert of it)
+                if (l.cpu_only || l.foreign) {   // (its type has no device kernel: the CPU lane reads every expert of it; Duo: the other host's)
                     l.n_vram = 0;
                     continue;
                 }
@@ -5465,7 +5470,7 @@ struct Model::Impl {
                 if (l.grp == (int) gi) used += (double) ucount(l) * l.n_vram;
             // what the floors left: whole experts, layer by layer
             for (Layer& l : L) {
-                if (l.grp != (int) gi || l.cpu_only) continue;
+                if (l.grp != (int) gi || l.cpu_only || l.foreign) continue;
                 while (l.n_vram < l.n_exp && used + (double) ucount(l) <= budget) {
                     ++l.n_vram;
                     used += (double) ucount(l);
@@ -7111,6 +7116,7 @@ struct Model::Impl {
     }
 
     void reset() {
+        if (o.duo_role == 2 && dl.open()) dl.send(duo::kReset);
         pos = 0;
         toks.clear();
         ctoks.clear();
@@ -7134,7 +7140,10 @@ struct Model::Impl {
 
     // the state at pos into checkpoint `slot` (the window rings and the compressors' partial groups: the rest of the
     // state is indexed by position, and what lies past a restored position is written again)
-    void checkpoint(int slot) { snap_into(ck[slot & 1]); }
+    void checkpoint(int slot) {
+        if (o.duo_role == 2 && dl.open()) dl.send(duo::kCheckpoint, slot);
+        snap_into(ck[slot & 1]);
+    }
     void snap_into(Check& c) {
         c.pos = pos;
         c.win.resize(L.size());
@@ -7172,6 +7181,7 @@ struct Model::Impl {
     // the state at pos as a restore point a request asked for (shared: the end of a shared start, given up last); one
     // at this position already is kept (it holds the same state), else the one mark_victim() picks makes room
     void mark(bool shared) {
+        if (o.duo_role == 2 && dl.open()) dl.send(duo::kMark, shared ? 1 : 0);
         if (Check* c = mark_room(pos, shared)) snap_into(*c);
     }
     // the restore point at position `at` to fill (nullptr: none kept, or one there already - in use again)
@@ -7212,6 +7222,7 @@ struct Model::Impl {
 
     // checkpoint 1 (the position before the last prompt's end) becomes the anchor too
     void pin() {
+        if (o.duo_role == 2 && dl.open()) dl.send(duo::kPin);
         if (ck[1].pos > 0) ck[2] = ck[1];
     }
     // the checkpoints the state can go back to (what a slot of it keeps), latest first
@@ -7242,6 +7253,7 @@ struct Model::Impl {
     }
 
     bool restore(int64_t limit) {
+        if (o.duo_role == 2 && dl.open()) dl.send(duo::kRestore, limit);   // (the same checkpoints there: the same answer)
         const int b = best_check(limit);
         if (b < 0) return false;
         const Check& c = check_at(b);
@@ -9340,7 +9352,7 @@ struct Model::Impl {
         pf_want.clear();
         for (int a = 1; a <= 2; ++a) {
             const int m = std::min(r.na[a - 1], a == 1 ? kAhead1 : kPicks), j = li + a;
-            if (m <= 0 || j >= (int) L.size()) continue;
+            if (m <= 0 || j >= (int) L.size() || L[(size_t) j].foreign) continue;
             const Layer& n = L[(size_t) j];
             uint8_t* fl = ahead_fl.data() + (size_t) j * 1024;
             uint8_t* rk = ahead_rank.data() + (size_t) j * 1024;
@@ -13370,6 +13382,13 @@ struct Model::Impl {
                 return false;
             }
         const int64_t p0 = pos;
+        if (o.duo_role == 2) {   // Duo: the prefix host runs the same window on its layers; its hand-off comes back in forward_serial
+            duo_tk.assign(tk, tk + T);
+            if (!dl.send(duo::kForward, p0, T, duo_tk.data(), (size_t) T * 4)) {
+                err = "duo: the link to the prefix host is gone";
+                return false;
+            }
+        }
         slot_held = false;   // (the state grows now: what slot_save took is no longer the conversation)
         for (int t = 0; t < T; ++t) {
             toks.push_back(tk[t]);
@@ -13380,6 +13399,7 @@ struct Model::Impl {
         const double te = now_ms();
         const int64_t eg_w0 = eg_wait_ns.load();
         for (int li = 0; li < pk.eg_layers; ++li) {
+            if (L[(size_t) g.eg_layers[(size_t) li]].foreign) continue;   // (Duo: the other host's layer reads these rows)
             EgBatch& b = *eg_win[(size_t) li];
             if (b.live) eg_finish(b);   // (a window that failed midway: its reads end before h_eg is reused)
             eg_issue(p0, T, li, nullptr, b);
@@ -13412,6 +13432,192 @@ struct Model::Impl {
         cache_tick(T);
         if (seed_rows != 0 && !seed_drafter(p0, seed_rows < 0 ? T : seed_rows, 0, err)) return false;
         return true;
+    }
+
+    // ---- Strata Duo (ds4_duo.hpp) ----
+    duo::Link dl;
+    std::vector<int32_t> duo_tk;
+    std::vector<uint8_t> duo_buf;   // a window's hand-off: h | pre | topk | cand, as hand_xfer lays it out
+    double duo_wait_ms = 0.0, duo_io_ms = 0.0;
+    int64_t duo_windows = 0;
+    size_t duo_sizes(int T, size_t n[4]) const {
+        n[0] = (size_t) T * g.hc * g.dim * 4, n[1] = (size_t) T * 8 * 4, n[2] = (size_t) T * topk_stride() * 4,
+        n[3] = (size_t) T * cand_stride() * 4;
+        return n[0] + n[1] + n[2] + n[3];
+    }
+    // what both hosts must agree on: the engine, the model's geometry and files (by size), the cut and the context
+    std::string duo_identity() const {
+        std::ostringstream id;
+        id << "strata-ds4-duo-1 engine=" << STRATA_VERSION << " nl=" << g.nl << " dim=" << g.dim << " hd=" << g.hd << " hc=" << g.hc
+           << " win=" << g.win << " topk=" << topk_stride() << " cand=" << cand_stride() << " ratios=";
+        for (int r : g.ratios) id << r << ",";
+        id << " kv=";
+        for (int v : g.kv_src) id << v << ",";
+        id << " ix=";
+        for (int v : g.ix_src) id << v << ",";
+        for (size_t i = 0; i < pk.files.size(); ++i) {   // (by name and size: each host keeps the files where it likes)
+            const size_t sl = pk.files[i].find_last_of("/\\");
+            id << " " << (sl == std::string::npos ? pk.files[i] : pk.files[i].substr(sl + 1)) << ":" << os::file_size(pk.fds[i]);
+        }
+        id << " cut=" << o.duo_cut << " ctx=" << o.max_context;
+        return id.str();
+    }
+    bool duo_check(std::string& err) const {
+        if (o.duo_cut < 1 || o.duo_cut >= g.nl) err = "duo: --duo-cut must be inside the model's layers";
+        else if (devs.size() != 1) err = "duo: one device a host";
+        else if (g.n_mtp > 0) err = "duo: the drafter is not supported (--dspark none)";
+        else if (o.seqs != 1) err = "duo: --parallel 1 only";
+        else if (chunk > 0 || par) err = "duo: the windowed path only (--prefill-chunk 0, DS4_NO_CHUNKS=1, --threads off)";
+        else {
+            // a KV source the other host writes cannot be read here: the cut must not part a source from its readers
+            for (int il = 0; il < g.nl; ++il) {
+                const Layer& l = L[(size_t) il];
+                for (int sidx : {l.src, l.ix_src ? l.ik_src : -1}) {
+                    if (sidx < 0) continue;
+                    if ((srcs[(size_t) sidx].layer < o.duo_cut) != (il < o.duo_cut)) {
+                        err = "duo: layer " + std::to_string(il) + " reads the compressed KV of layer " +
+                              std::to_string(srcs[(size_t) sidx].layer) + " across the cut (pick a cut at a KV source's layer)";
+                        return false;
+                    }
+                }
+            }
+            return true;
+        }
+        return false;
+    }
+    // the suffix host, after the load: the link and the handshake
+    bool duo_open(std::string& err) {
+        if (o.duo_role == 0) return true;
+        if (!duo_check(err)) return false;
+        duo_buf.resize(duo_sizes(kWin, std::array<size_t, 4>().data()));
+        if (o.duo_role != 2) return true;
+        if (!dl.connect_to(o.duo_addr, err)) return false;
+        const std::string id = duo_identity();
+        duo::Head h;
+        if (!dl.send(duo::kHello, 0, 0, id.data(), id.size()) || !dl.recv_head(h)) {
+            err = "duo: no answer from the prefix host";
+            return false;
+        }
+        std::string msg((size_t) h.bytes, '\0');
+        if (h.bytes > 0 && !dl.get(&msg[0], msg.size())) msg = "the link closed";
+        if (h.op != duo::kOk) {
+            err = "duo: the prefix host refused: " + msg;
+            return false;
+        }
+        std::fprintf(stderr, "ds4 duo: suffix host, layers [%d, %d) + head; prefix host %s holds [0, %d)\n", o.duo_cut, g.nl,
+                     o.duo_addr.c_str(), o.duo_cut);
+        return true;
+    }
+    // the prefix host: the window's hand-off to the suffix host
+    bool duo_give(Dev& d, int T, std::string& err) {
+        size_t n[4];
+        const size_t all = duo_sizes(T, n);
+        uint8_t* bb = duo_buf.data();
+        cudaSetDevice(d.id);
+        CK(cudaMemcpyAsync(bb, d.h, n[0], cudaMemcpyDeviceToHost, d.st));
+        CK(cudaMemcpyAsync(bb + n[0], d.pre, n[1], cudaMemcpyDeviceToHost, d.st));
+        CK(cudaMemcpyAsync(bb + n[0] + n[1], d.topk, n[2], cudaMemcpyDeviceToHost, d.st));
+        CK(cudaMemcpyAsync(bb + n[0] + n[1] + n[2], d.cand, n[3], cudaMemcpyDeviceToHost, d.st));
+        CK(cudaStreamSynchronize(d.st));
+        const double t0 = now_ms();
+        if (!dl.send(duo::kHand, T, 0, bb, all)) {
+            err = "duo: the link to the suffix host is gone";
+            return false;
+        }
+        duo_io_ms += now_ms() - t0;
+        ++duo_windows;
+        return true;
+    }
+    // the suffix host: the prefix host's hand-off into this device's window buffers
+    bool duo_take(Dev& d, int T, std::string& err) {
+        size_t n[4];
+        const size_t all = duo_sizes(T, n);
+        duo::Head h;
+        const double t0 = now_ms();
+        if (!dl.recv_head(h)) {
+            err = "duo: the link to the prefix host is gone";
+            return false;
+        }
+        if (h.op != duo::kHand || h.a != T || h.bytes != all) {
+            std::string msg(h.op == duo::kErr ? (size_t) std::min<uint64_t>(h.bytes, 4096) : 0, '\0');
+            if (!msg.empty()) dl.get(&msg[0], msg.size());
+            err = "duo: the prefix host: " + (msg.empty() ? std::string("an unexpected answer") : msg);
+            dl.close();
+            return false;
+        }
+        uint8_t* bb = duo_buf.data();
+        if (!dl.get(bb, all)) {
+            err = "duo: the link to the prefix host is gone";
+            return false;
+        }
+        duo_wait_ms += now_ms() - t0;
+        ++duo_windows;
+        cudaSetDevice(d.id);
+        CK(cudaMemcpyAsync(d.h, bb, n[0], cudaMemcpyHostToDevice, d.st));
+        CK(cudaMemcpyAsync(d.pre, bb + n[0], n[1], cudaMemcpyHostToDevice, d.st));
+        CK(cudaMemcpyAsync(d.topk, bb + n[0] + n[1], n[2], cudaMemcpyHostToDevice, d.st));
+        CK(cudaMemcpyAsync(d.cand, bb + n[0] + n[1] + n[2], n[3], cudaMemcpyHostToDevice, d.st));
+        return true;
+    }
+    // the prefix host's loop: the suffix host's calls, each run on this host's layers
+    bool duo_serve(std::string& err) {
+        if (o.duo_role != 1) {
+            err = "duo: not the prefix host";
+            return false;
+        }
+        std::fprintf(stderr, "ds4 duo: prefix host, layers [0, %d); waiting on %s for %s\n", o.duo_cut, o.duo_addr.c_str(),
+                     o.duo_allow.empty() ? "any peer" : o.duo_allow.c_str());
+        if (!dl.accept_one(o.duo_addr, o.duo_allow, err)) return false;
+        duo::Head h;
+        if (!dl.recv_head(h) || h.op != duo::kHello || h.bytes > 65536) {
+            err = "duo: not a suffix host's greeting";
+            return false;
+        }
+        std::string theirs((size_t) h.bytes, '\0');
+        if (!dl.get(&theirs[0], theirs.size())) {
+            err = "duo: the link closed in the greeting";
+            return false;
+        }
+        const std::string mine = duo_identity();
+        if (theirs != mine) {
+            const std::string msg = "the two hosts differ: here " + mine + " there " + theirs;
+            dl.send(duo::kErr, 0, 0, msg.data(), msg.size());
+            err = "duo: " + msg;
+            return false;
+        }
+        if (!dl.send(duo::kOk)) return false;
+        std::fprintf(stderr, "ds4 duo: the suffix host is connected\n");
+        std::vector<int> tk;
+        for (;;) {
+            if (!dl.recv_head(h)) return true;   // (the suffix host left)
+            switch (h.op) {
+            case duo::kForward: {
+                const int T = (int) h.b;
+                if (T < 1 || T > kWin || h.bytes != (uint64_t) T * 4 || h.a != pos) {
+                    err = "duo: a window at " + std::to_string(h.a) + " of " + std::to_string(T) + " tokens, this host is at " +
+                          std::to_string(pos);
+                    dl.send(duo::kErr, 0, 0, err.data(), err.size());
+                    return false;
+                }
+                tk.resize((size_t) T);
+                if (!dl.get(tk.data(), (size_t) T * 4)) return true;
+                if (!forward(tk.data(), T, 0, err)) {
+                    dl.send(duo::kErr, 0, 0, err.data(), err.size());
+                    return false;
+                }
+                break;
+            }
+            case duo::kReset: reset(); break;
+            case duo::kCheckpoint: checkpoint((int) h.a); break;
+            case duo::kMark: mark(h.a != 0); break;
+            case duo::kPin: pin(); break;
+            case duo::kRestore: restore(h.a); break;
+            case duo::kBye: return true;
+            default:
+                err = "duo: an unknown call " + std::to_string(h.op);
+                return false;
+            }
+        }
     }
 
     // one thread: the layers device after device, the hand-offs through pinned memory and events
@@ -13453,6 +13659,11 @@ struct Model::Impl {
         if (dump_h != nullptr) dump.resize((size_t) T * g.nl * H * D);
         for (int il = 0; il < g.nl; ++il) {
             Layer& l = L[(size_t) il];
+            if (l.foreign) {   // Duo: the other host's layers
+                if (o.duo_role == 1) break;   // (the prefix host: its layers are done, the hand-off below)
+                continue;
+            }
+            if (o.duo_role == 2 && il == o.duo_cut && !duo_take(devs[(size_t) l.dev], T, err)) return false;
             if (l.dev != cur) {
                 Dev& a = devs[(size_t) cur];
                 Dev& b = devs[(size_t) l.dev];
@@ -13488,6 +13699,7 @@ struct Model::Impl {
             }
         }
         if (dump_h != nullptr) std::fwrite(dump.data(), 4, dump.size(), dump_h);
+        if (o.duo_role == 1) return duo_give(devs[(size_t) cur], T, err);
         if (cur != head_dev) {
             err = "the head is not on the last layer's GPU";
             return false;
@@ -14849,7 +15061,20 @@ struct Model::Impl {
 
 Model::Model() : p_(new Impl) {}
 Model::~Model() = default;
-bool Model::load(const Options& o, std::string& err) { return p_->load(o, err); }
+bool Model::load(const Options& o, std::string& err) { return p_->load(o, err) && p_->duo_open(err); }
+bool Model::duo_serve(std::string& err) { return p_->duo_serve(err); }
+std::string Model::duo_report() const {
+    const Impl& p = *p_;
+    if (p.o.duo_role == 0 || p.duo_windows == 0) return "";
+    char b[256];
+    if (p.o.duo_role == 2)
+        std::snprintf(b, sizeof b, "duo suffix: %lld windows; waited %.0f ms for the prefix host's hand-offs (%.1f ms a window: its layers and the link)\n",
+                      (long long) p.duo_windows, p.duo_wait_ms, p.duo_wait_ms / (double) p.duo_windows);
+    else
+        std::snprintf(b, sizeof b, "duo prefix: %lld windows; %.0f ms sending the hand-offs (%.2f ms a window)\n", (long long) p.duo_windows,
+                      p.duo_io_ms, p.duo_io_ms / (double) p.duo_windows);
+    return b;
+}
 bool Model::step(int token, bool logits, std::string& err) { return p_->step(token, logits, err); }
 bool Model::feed(const int* tokens, int n, int logits_rows, std::string& err, int after) {
     Impl& p = *p_;
@@ -15005,8 +15230,18 @@ bool Model::restore(int64_t limit) { return p_->restore(limit); }
 void Model::pin() { p_->pin(); }
 std::vector<int64_t> Model::check_positions() const { return p_->check_positions(); }
 int64_t Model::restorable(int64_t limit) const { return p_->restorable(limit); }
-uint64_t Model::slot_save(std::vector<uint8_t>& out, std::string& err, int64_t at) { return p_->slot_save(out, err, at); }
+uint64_t Model::slot_save(std::vector<uint8_t>& out, std::string& err, int64_t at) {
+    if (p_->o.duo_role != 0) {   // (Duo: a conversation set aside would be two halves on two hosts - not yet)
+        err = "duo: conversations are not set aside";
+        return 0;
+    }
+    return p_->slot_save(out, err, at);
+}
 bool Model::slot_load(const uint8_t* data, size_t bytes, int64_t n_pos, std::string& err) {
+    if (p_->o.duo_role != 0) {
+        err = "duo: conversations are not set aside";
+        return false;
+    }
     return p_->slot_load(data, bytes, n_pos, err);
 }
 std::string Model::slot_identity() const { return p_->slot_identity(); }

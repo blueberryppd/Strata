@@ -2523,6 +2523,10 @@ int main(int argc, char** argv) {
         } else if (a == "--max-context") o.max_context = std::atoll(val("--max-context").c_str());
         else if (a == "--reserve-mib") o.reserve_mib = std::atoll(val("--reserve-mib").c_str());
         else if (a == "--vram-experts") { o.vram_experts = std::atof(val("--vram-experts").c_str()); o.vram_experts_auto = false; }
+        else if (a == "--duo-listen") { o.duo_role = 1; o.duo_addr = val("--duo-listen"); }
+        else if (a == "--duo-allow") o.duo_allow = val("--duo-allow");
+        else if (a == "--duo-connect") { o.duo_role = 2; o.duo_addr = val("--duo-connect"); }
+        else if (a == "--duo-cut") o.duo_cut = std::atoi(val("--duo-cut").c_str());
         else if (a == "--cpu-threads") o.cpu_threads = std::atoi(val("--cpu-threads").c_str());
         else if (a == "--expert-profile") o.profile = val("--expert-profile");
         else if (a == "--profile-readonly") o.profile_readonly = true;   // (read the placement, never write the counts back)
@@ -2610,7 +2614,11 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "--multi-check needs --parallel 2..8 and --ids\n");
         return 2;
     }
-    if (o.pack.empty() || (!serve_mode && ids_s.empty() && enc_rgb.empty() && score_ids.empty() && prof_ids.empty() && spec_ids.empty())) {
+    if (o.duo_role != 0) {   // Strata Duo: text, one conversation, the windowed path, no drafter (ds4_duo.hpp)
+        o.dspark = false, o.dspark_auto = false, o.seqs = 1, o.prefill_chunk = 0, o.threads = false, o.tp = 1, o.vision = false;
+        setenv("DS4_NO_CHUNKS", "1", 1);
+    }
+    if (o.pack.empty() || (o.duo_role != 1 && !serve_mode && ids_s.empty() && enc_rgb.empty() && score_ids.empty() && prof_ids.empty() && spec_ids.empty())) {
         usage();
         return 2;
     }
@@ -2626,6 +2634,16 @@ int main(int argc, char** argv) {
     }
     if (!o.vision_only) std::fprintf(stderr, "%s", m.describe().c_str());
     if (const char* idle = std::getenv("DS4_TEST_IDLE_MS")) std::this_thread::sleep_for(std::chrono::milliseconds(std::atoi(idle)));   // (tests: a person typing)
+    if (o.duo_role == 1) {   // the prefix host: the suffix host's calls until it leaves
+        const bool ok = m.duo_serve(err);
+        if (!ok) std::fprintf(stderr, "maya-ds4: %s\n", err.c_str());
+        const strata::ds4::Stats sd = m.stats();
+        std::fprintf(stderr, "%s", m.duo_report().c_str());
+        std::fprintf(stderr, "duo prefix: %lld tokens; routed experts %lld, on the CPU lane %lld (%.1f%%); layers %.0f ms, CPU lane %.0f ms\n",
+                     (long long) sd.tokens, (long long) sd.experts, (long long) sd.cpu_experts,
+                     sd.experts > 0 ? 100.0 * (double) sd.cpu_experts / (double) sd.experts : 0.0, sd.layer_ms, sd.cpu_ms);
+        return ok ? 0 : 1;
+    }
     if (serve_mode) return serve(m, eos, spec, o.dspark_conf, o.pack);
     const int window_given = window;
     if (window == 0) window = 16;   // (the scoring / profiling runs; the plain run below takes the model's feed unit)
@@ -2787,6 +2805,7 @@ int main(int argc, char** argv) {
     const double t2 = now_ms();
     const auto& s = m.stats();
     const double nt = std::max<double>(1.0, (double) (s.tokens - s0.tokens));
+    std::fprintf(stderr, "%s", m.duo_report().c_str());
     std::fprintf(stderr, "decode: %zu tokens in %.0f ms (%.2f tok/s); CPU lane: %lld of %lld experts, streamed to the GPU: "
                          "%lld; the cache moved %lld (%lld in all)\n", out.size(), t2 - t1,
                  out.size() > 1 ? 1000.0 * (double) (out.size() - 1) / (t2 - t1) : 0.0,
