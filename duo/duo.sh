@@ -155,7 +155,11 @@ host_down() {
       cmd=$(ps -ww -o command= -p "$pid" 2>/dev/null) || continue
       case "$cmd" in *"--config $H_RUN/serve.json --host "*) kill "$pid" 2>/dev/null ;; esac
     done
-    sleep 1
+    # The server ends its engine in order, and the engine first sets the open conversation aside - through the link,
+    # so the prefix engine must still be there: wait for the suffix engine to leave (the caller stops the prefix
+    # engine after this), 20 s at most.
+    local n=0
+    while [ $n -lt 40 ] && pgrep -U "$(id -u)" -f "$(engine_regex)" > /dev/null 2>&1; do sleep 0.5; n=$((n + 1)); done
   fi
   kill_matching "$(engine_regex)" "strata_ds4"
 }
@@ -255,11 +259,15 @@ stop_session() {
   return 0
 }
 down() {
-  # No broad ssh match: another pair may use a script with the same name.
-  stop_session server_ssh
-  stop_session prefix_ssh
-  if [ "$LOCAL_ROLE" = suffix ]; then run_on local 'host_down'; run_on peer 'host_down' 2>/dev/null
-  else run_on peer 'host_down' 2>/dev/null; run_on local 'host_down'; fi
+  # The suffix host first, and its sessions only after it: its engine saves the open conversation on the way out and
+  # needs the prefix engine for that. (No broad ssh match: another pair may use a script with the same name.)
+  if [ "$LOCAL_ROLE" = suffix ]; then
+    run_on local 'host_down'; stop_session server_ssh
+    run_on peer 'host_down' 2>/dev/null; stop_session prefix_ssh
+  else
+    run_on peer 'host_down' 2>/dev/null; stop_session server_ssh
+    run_on local 'host_down'; stop_session prefix_ssh
+  fi
   echo unloaded
 }
 
