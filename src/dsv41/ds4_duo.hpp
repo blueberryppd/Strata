@@ -6,6 +6,13 @@
 // reset, checkpoint, mark, pin, restore) to the worker, which runs it on its own layers, and a window's hand-off
 // (h | pre | topk | cand, what a device change moves in forward_serial) comes back over the link.
 //
+// A long prompt goes through the chunked path on both hosts (kChunks: the run's tokens, its layout - the rows a chunk,
+// the long prompt's skip - and the restore points it keeps on the way): the worker runs its layers over each chunk
+// and sends that chunk's hand-off rows (kHand, b the chunk's index; 92 KB a row, so a chunk is one stream of up to
+// hundreds of MB - no message bound), the coordinator runs its layers and the head on them; both keep the run's
+// restore points from their own layers' states, so restore() after it is what it is after windows.  A run of chunks
+// across the hosts ignores a yield and reads on through a Stop (the request ends after the run).
+//
 // The link is one TCP stream between two addresses of a private point-to-point network (the worker binds one address
 // and admits one peer address), and over it, in a build with -DSTRATA_DUO_TLS=ON, TLS 1.3 with mutual authentication
 // (--duo-certs DIR):
@@ -46,7 +53,18 @@
 namespace strata::ds4::duo {
 
 enum Op : uint32_t { kHello = 1, kOk = 2, kErr = 3, kForward = 4, kHand = 5, kReset = 6, kCheckpoint = 7, kMark = 8, kPin = 9,
-                     kRestore = 10, kBye = 11 };
+                     kRestore = 10, kBye = 11, kChunks = 12 };
+
+// kChunks' payload (a = the run's first position, b = its tokens): this, then n_inner pairs of int64 (a restore
+// point's position, 1 the end of a shared start), then the b tokens (int32)
+struct ChunksPlan {
+    int32_t per = 0;         // rows a chunk (the last one: the rest)
+    int32_t yoco = -1;       // the long prompt's skip: its layer (-1 none) and the rows skipped past it
+    int32_t skip = 0;
+    int32_t snap_slot = -1;  // feed_mark's checkpoint before the run's last row (-1: none)
+    int32_t after = 0;
+    int32_t n_inner = 0;
+};
 
 struct Head {
     uint32_t magic = 0x4f554444u;   // "DDUO"

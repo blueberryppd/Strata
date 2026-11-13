@@ -4895,6 +4895,17 @@ struct Model::Impl {
     }
     // layer L0 of chunk k routed (bounds b, the device's copy d_bounds): its streamed experts as they land, the VRAM
     // ones in shares between them (the device works while the reads run)
+    // DS4_SUM_BY_EXPERT=1 (tests; off: nothing changes): a chunk's experts are added into a token's sum one expert at a
+    // time in virtual-slot order, the VRAM ones first.  As it is, a token's picks are added set by set (run_set), and a
+    // layer's sets are cut by where its stream stands in the ring (flow_layer's batches: never across the ring's end)
+    // - which counts every expert the layers before it streamed in this run.  So the same layer over the same rows
+    // rounds differently (1 ulp) when the run before it differs: one host's 40 layers against Strata Duo's suffix host,
+    // whose stream starts at layer `cut`.  With this on, the sums no longer depend on the sets, and the two agree bit
+    // for bit (the proof that the hand-offs are exact); it costs a combine pass an expert instead of one a set.
+    static bool sum_by_expert() {
+        static const bool on = std::getenv("DS4_SUM_BY_EXPERT") != nullptr && std::atoi(std::getenv("DS4_SUM_BY_EXPERT")) != 0;
+        return on;
+    }
     bool flow_layer(Dev& d, Chunk& c, Layer& L0, int mi, int k, int T, const std::vector<int>& b, std::string& err) {
         cudaStream_t s = d.st;
         const Layer& vx = member(L0, mi);   // (a member's: its part of each VRAM expert, L0's slots)
@@ -4908,6 +4919,10 @@ struct Model::Impl {
         if (flow_next(c, k, L0.il, k2, il2)) flow_spec(c, k2, il2, fl_rows(c, k2, il2));
         const size_t R = (size_t) c.ring_n, bmax = std::max<size_t>(1, R / 2);
         int v_done = 0;
+        if (sum_by_expert()) {   // (tests: the VRAM experts first, not between the stream's batches)
+            if (!run_vram(d, c, L0, L0, vx, b.data(), 0, L0.pv_n, T, err)) return false;
+            v_done = L0.pv_n;
+        }
         while (c.n_comp < le) {
             // a batch's bounds are fixed by the stream alone (bmax items, never across the ring's end), never by what
             // has landed: the experts' outputs are summed batch after batch (the VRAM ones' shares between them), so
@@ -4943,8 +4958,10 @@ struct Model::Impl {
             c.n_comp = i1;
             if (!flow_pump(c, err)) return false;
             const int v_to = (int) ((int64_t) L0.pv_n * (int64_t) (c.n_comp - lb) / (int64_t) std::max<size_t>(1, n_lay));
-            if (!run_vram(d, c, L0, L0, vx, b.data(), v_done, v_to, T, err)) return false;
-            v_done = v_to;
+            if (v_to > v_done) {
+                if (!run_vram(d, c, L0, L0, vx, b.data(), v_done, v_to, T, err)) return false;
+                v_done = v_to;
+            }
         }
         if (!run_vram(d, c, L0, L0, vx, b.data(), v_done, L0.pv_n, T, err)) return false;
         while (c.base < c.n_comp && c.items.size() > 4096) {   // (done with: read, copied and used)
@@ -5064,7 +5081,12 @@ struct Model::Impl {
                     std::fwrite(yv.data(), 4, yv.size(), dump_y);
                     std::fflush(dump_y);
                 }
-                moe_combine(c.acc, c.y, c.pos, c.rw, T, l.k_exp, a, a + nrows, D, d.st);
+                if (sum_by_expert()) {   // (each expert's rows added on their own: a token's sum in slot order whatever the sets)
+                    for (int i = i0; i < j; ++i)
+                        if (b[i + 1] > b[i])
+                            moe_combine(c.acc, c.y + (size_t) (b[i] - a) * D, c.pos, c.rw, T, l.k_exp, b[i], b[i + 1], D, d.st);
+                } else
+                    moe_combine(c.acc, c.y, c.pos, c.rw, T, l.k_exp, a, a + nrows, D, d.st);
             }
             i0 = j;
         }
@@ -11969,7 +11991,9 @@ struct Model::Impl {
                     wp.eg_slot = (int) (eg_u % 2);
                     if (++eg_u < egu.size()) eg_next = std::async(std::launch::async, read_eg, eg_u);
                 }
-                if (li == 0) {   // the chunk's input: its embedding rows
+                if (li == 0 && o.duo_role == 2) {   // Duo: the chunk's input is the prefix host's hand-off
+                    if (!duo_take_chunk(d, c, k, T, err)) return false;
+                } else if (li == 0) {   // the chunk's input: its embedding rows
                     if (k >= 2) CK(cudaEventSynchronize(c.emb_ev[slot]));
                     for (int t = 0; t < T; ++t)
                         std::memcpy(c.emb_host[slot] + (size_t) t * D, emb_row(p0 + t, toks[(size_t) (p0 + t)]),
@@ -12009,6 +12033,10 @@ struct Model::Impl {
                     const Xfer x = chunk_xfer(c.lm_state + (size_t) k * hb, c, T, true);
                     for (int i = 0; i < x.n; ++i)
                         CK(cudaMemcpyAsync(x.dst[i], x.src[i], x.bytes[i], cudaMemcpyDeviceToHost, s));
+                    continue;
+                }
+                if (o.duo_role == 1) {   // Duo's prefix host: its layers are done with the chunk - the hand-off
+                    if (run.runs(k, o.duo_cut) && !duo_give_chunk(d, c, k, T, err)) return false;
                     continue;
                 }
                 // through every layer: the chunk's end, and the logits
@@ -12054,7 +12082,7 @@ struct Model::Impl {
             c.fl_layers.clear();
             for (int il = 0; il < g.nl; ++il)   // (a group's layers: on each member)
                 for (int m = 0; m < L[(size_t) il].nm; ++m)
-                    if (member(L[(size_t) il], m).dev == di) c.fl_layers.push_back(il);
+                    if (member(L[(size_t) il], m).dev == di && !L[(size_t) il].foreign) c.fl_layers.push_back(il);   // (Duo: this host's)
             c.fl_T = run.T;
             c.fl_yoco = run.yoco;
             c.fl_cut_k = run.cut_k;
@@ -12078,8 +12106,19 @@ struct Model::Impl {
             for (int t : run.T) run_n += t;
             c.buffered = run_n <= buf_max;
             if (!c.fl_layers.empty()) {
-                flow_spec(c, 0, c.fl_layers[0], run.T[0]);
-                if (!flow_pump(c, err)) return false;
+                // (the first of the device's (chunk, layer) that streams experts: chunk 0 of its first layer - unless a
+                //  long prompt's skip leaves that out, Duo's suffix host whose first layer is the skip's or past it)
+                int k0 = 0, il0 = c.fl_layers[0];
+                bool any = true;
+                if (c.fl_yoco >= 0 && k0 < c.fl_cut_k && il0 >= c.fl_yoco) {
+                    int k1 = 0, il1 = 0;
+                    any = flow_next(c, k0, il0, k1, il1);
+                    k0 = k1, il0 = il1;
+                }
+                if (any) {
+                    flow_spec(c, k0, il0, fl_rows(c, k0, il0));
+                    if (!flow_pump(c, err)) return false;
+                }
             }
             if (c.lm) return run_dev_layers(di, run, err);
         }
@@ -12089,7 +12128,7 @@ struct Model::Impl {
                 const Layer& L0 = L[(size_t) il];
                 bool here = false;
                 for (int m = 0; m < L0.nm; ++m) here = here || member(L0, m).dev == di;
-                if (!here) continue;
+                if (!here || L0.foreign) continue;
                 for (int j0 = 0; j0 < (int) L0.host_list.size(); j0 += B)
                     S.b.push_back({k, il, j0, std::min(B, (int) L0.host_list.size() - j0)});
             }
@@ -12118,7 +12157,7 @@ struct Model::Impl {
         std::vector<int> egs;
         for (const Layer& l0 : L)
             for (int m = 0; m < l0.nm; ++m)
-                if (member(l0, m).dev == di && !l0.mtp && l0.eg >= 0) egs.push_back(l0.eg);
+                if (member(l0, m).dev == di && !l0.mtp && !l0.foreign && l0.eg >= 0) egs.push_back(l0.eg);
         const size_t eg_per = (size_t) (pk.eg_ngram - 1) * pk.eg_heads * (pk.eg_hd + pk.eg_hd / 32);
         auto read_eg = [this, &c, &run, &egs, eg_per](int k) {
             if (k >= 2) cudaEventSynchronize(c.eg_ev[k % 2]);
@@ -12161,10 +12200,12 @@ struct Model::Impl {
                 int mi = -1;
                 for (int m = 0; m < L0.nm; ++m)
                     if (member(L0, m).dev == di) mi = m;
-                if (mi < 0) continue;
+                if (mi < 0 || L0.foreign) continue;   // (Duo: the other host's layers)
                 if (!started) {   // the chunk's input: its embedding rows, or the previous group's hand-off
                     started = true;
-                    if (il == 0) {
+                    if (o.duo_role == 2) {   // Duo: the prefix host's hand-off
+                        if (!duo_take_chunk(d, c, k, T, err)) return false;
+                    } else if (il == 0) {
                         if (k >= 2) CK(cudaEventSynchronize(c.emb_ev[slot]));
                         for (int t = 0; t < T; ++t)
                             std::memcpy(c.emb_host[slot] + (size_t) t * D, emb_row(p0 + t, toks[(size_t) (p0 + t)]),
@@ -12224,6 +12265,10 @@ struct Model::Impl {
                 }
                 if (!run_layer(L0, mi, p0, T, wp, S, err, run, k, il)) return false;
                 if (dump_l != nullptr && mi == 0) dump_layer(d, c.h, il, p0, T);
+                if (o.duo_role == 1 && il + 1 == o.duo_cut) {   // Duo's prefix host: its layers are done with the chunk
+                    if (run.runs(k, o.duo_cut) && !duo_give_chunk(d, c, k, T, err)) return false;
+                    break;
+                }
                 const bool last = il + 1 == g.nl || L[(size_t) il + 1].grp != L0.grp;
                 if (last && mi == 0 && il + 1 < g.nl) {   // the hand-off, once the next group took the chunk before last
                     const int nnext = L[(size_t) il + 1].nm;
@@ -12239,7 +12284,7 @@ struct Model::Impl {
                 CK(cudaEventRecord(chunk_done[(size_t) k], s));
                 chunk_rec[(size_t) k].store(1, std::memory_order_release);
             }
-            if (d.grp == devs[(size_t) head_dev].grp) {   // the head group: each member its share of the logits
+            if (d.grp == devs[(size_t) head_dev].grp && o.duo_role != 1) {   // the head group: each member its share of the logits
                 if (logits_all) {   // every row's logits (tests): the head over the chunk's rows, 16 at a time
                     const size_t base = (size_t) (p0 - run.p0[0]) * g.vocab;
                     for (int r0 = 0; r0 < T; r0 += kWin) {
@@ -12560,6 +12605,7 @@ struct Model::Impl {
         double file_b = 0;
         for (int il = 0; il < g.nl; ++il) {
             const Layer& l = L[(size_t) il];
+            if (l.foreign) continue;   // (Duo: the other host streams that layer's experts)
             size_t ne = 0;
             for (int e : l.host_list)
                 if (l.ram.empty() || l.ram[(size_t) e] < 0) ++ne;
@@ -12898,8 +12944,18 @@ struct Model::Impl {
     // after: a piece of a longer prompt, its tokens still to come in later feeds (the skip's kept rows are the prompt's last).
     // inner (feed_marks): restore points inside the run (positions in it, in order, at most kSnapN - 1; shared: the end of
     // a shared start), each kept from what the layers kept of it on the way - as mark() at that position would keep it
+    // Duo (dp: the prefix host, the run's layout as the suffix host laid it out): see forward_chunks_run
     bool forward_chunks(const int* tk, int n, int logits_rows, std::string& err, int snap_slot = -1, int after = 0,
-                        const std::vector<std::pair<int64_t, bool>>* inner = nullptr) {
+                        const std::vector<std::pair<int64_t, bool>>* inner = nullptr, const duo::ChunksPlan* dp = nullptr) {
+        duo_run_sent = false;
+        const bool ok = forward_chunks_run(tk, n, logits_rows, err, snap_slot, after, inner, dp);
+        // (Duo's suffix host, a run the prefix host was told of that failed here: the two are no longer at the same
+        //  position, and the prefix host may be in the middle of a hand-off - the link ends)
+        if (!ok && o.duo_role == 2 && duo_run_sent) dl.close();
+        return ok;
+    }
+    bool forward_chunks_run(const int* tk, int n, int logits_rows, std::string& err, int snap_slot, int after,
+                            const std::vector<std::pair<int64_t, bool>>* inner, const duo::ChunksPlan* dp) {
         if (inner != nullptr && inner->size() + 1 > (size_t) kSnapN) {
             err = "forward_chunks: restore points a run cannot keep";
             return false;
@@ -12924,7 +12980,7 @@ struct Model::Impl {
         // kv_only, the cut's chunk through those over all its rows and through the rest from the cut on (Run::r0, a
         // view of its buffers), the chunks after it through every layer - each layer's experts read as without the
         // skip.  One GPU (DS4_YOCO=1; 0: off); not with every row's logits (tests)
-        const int yl = logits_rows > kWin ? -1 : yoco_layer();
+        int yl = logits_rows > kWin ? -1 : yoco_layer();
         const int keep = yoco_keep(yl);
         // (a piece of a longer prompt, `after` more of its tokens in later feeds: the kept rows are the prompt's last, so
         //  a piece wholly before them is KV-only past yoco - as its rows are in the prompt read whole; a run that keeps
@@ -12932,8 +12988,33 @@ struct Model::Impl {
         //  a read up to the point leaves)
         int skip = std::min(n - 1, n + after - keep);   // (at least the last row through every layer)
         if (inner != nullptr && !inner->empty()) skip = std::min(skip, (int) (inner->front().first - pos) - keep);
-        const int a = yl > 0 && skip >= kYocoMin ? skip : 0;
-        const int nc = (n + chunk - 1) / chunk, per = (n + nc - 1) / nc;
+        int a = yl > 0 && skip >= kYocoMin ? skip : 0;
+        const int nc = (n + chunk - 1) / chunk;
+        int per = (n + nc - 1) / nc;
+        if (dp != nullptr) {   // Duo's prefix host: the suffix host's layout of the run (its chunks are the hand-offs)
+            if (dp->per < 1 || dp->per > chunk || dp->skip < 0 || dp->skip >= n) {
+                err = "duo: a run in chunks of " + std::to_string(dp->per) + " rows, this host's chunk is " + std::to_string(chunk);
+                return false;
+            }
+            per = dp->per, yl = dp->yoco, a = yl > 0 ? dp->skip : 0;
+        }
+        if (o.duo_role == 2) {   // Duo: the prefix host runs the same chunks on its layers, each one's hand-off comes back (duo_take_chunk)
+            duo::ChunksPlan pl;
+            pl.per = per, pl.yoco = a > 0 ? yl : -1, pl.skip = a, pl.snap_slot = snap_slot, pl.after = after;
+            pl.n_inner = inner != nullptr ? (int32_t) inner->size() : 0;
+            std::vector<uint8_t> msg(sizeof pl + (size_t) pl.n_inner * 16 + (size_t) n * 4);
+            std::memcpy(msg.data(), &pl, sizeof pl);
+            for (int j = 0; j < pl.n_inner; ++j) {
+                const int64_t pr[2] = {(*inner)[(size_t) j].first, (*inner)[(size_t) j].second ? 1 : 0};
+                std::memcpy(msg.data() + sizeof pl + (size_t) j * 16, pr, 16);
+            }
+            std::memcpy(msg.data() + sizeof pl + (size_t) pl.n_inner * 16, tk, (size_t) n * 4);
+            if (!dl.send(duo::kChunks, pos, n, msg.data(), msg.size())) {
+                err = "duo: the link to the prefix host is gone";
+                return false;
+            }
+            duo_run_sent = true;
+        }
         if (std::getenv("DS4_CHUNK_LOG") != nullptr) std::fprintf(stderr, "forward_chunks n %d nc %d per %d yoco %d keep %d skip_rows %d (after %d, first point at row %d)\n", n, nc, per, yl, keep, a,
                                                        after, inner != nullptr && !inner->empty() ? (int) (inner->front().first - pos) : -1);
         Run run;
@@ -12969,6 +13050,7 @@ struct Model::Impl {
         for (int il = 0; il < g.nl && !run.snap_pos.empty(); ++il) {
             Layer& l = L[(size_t) il];
             Dev& d = devs[(size_t) l.dev];
+            if (l.foreign) continue;   // (Duo: the other host keeps that layer's; snap_check takes its idle ring here)
             for (size_t i = 0; i < run.snap_pos.size(); ++i) {
                 if (l.snap_win[i] == nullptr && !dalloc(d, l.snap_win[i], (size_t) g.win * win_rb(), err)) return false;
                 if (l.c_kv != nullptr && l.snap_kv[i] == nullptr &&
@@ -13009,7 +13091,10 @@ struct Model::Impl {
             halt_seen = -1;
         }
         bool halting = false, stopping = false;
-        run_yields = yield_to != nullptr && !lm && !logits_all;
+        // (Duo: a run across the two hosts ends at its end - a yield is not taken and a Stop waits for it, the two
+        //  hosts' halves of the state would otherwise part)
+        const bool duo_run = o.duo_role != 0;
+        run_yields = yield_to != nullptr && !lm && !logits_all && !duo_run;
         for (size_t di = 0; di < devs.size(); ++di)
             workers[di]->submit([this, di, &run, &errs] {
                 std::string e;
@@ -13021,8 +13106,8 @@ struct Model::Impl {
             for (auto& w : workers) all = all && w->idle();
             // a Stop, or a yield (a run layer by layer has no chunk to end at; every row's logits: tests): the devices end
             // the run early
-            const bool stop = !all && !stopping && cancel && cancel();
-            const bool yield = !all && !halting && !lm && !logits_all && yield_to && yield_to();
+            const bool stop = !all && !stopping && !duo_run && cancel && cancel();
+            const bool yield = !all && !halting && !lm && !logits_all && !duo_run && yield_to && yield_to();
             if (stop || yield) {
                 stopping = stopping || stop;
                 yielding.store(!stopping, std::memory_order_release);
@@ -13459,7 +13544,7 @@ struct Model::Impl {
             const size_t sl = pk.files[i].find_last_of("/\\");
             id << " " << (sl == std::string::npos ? pk.files[i] : pk.files[i].substr(sl + 1)) << ":" << os::file_size(pk.fds[i]);
         }
-        id << " cut=" << o.duo_cut << " ctx=" << o.max_context;
+        id << " cut=" << o.duo_cut << " ctx=" << o.max_context << " chunk=" << chunk;   // (chunk: a run's hand-offs fit both)
         return id.str();
     }
     bool duo_check(std::string& err) const {
@@ -13467,7 +13552,7 @@ struct Model::Impl {
         else if (devs.size() != 1) err = "duo: one device a host";
         else if (g.n_mtp > 0) err = "duo: the drafter is not supported (--dspark none)";
         else if (o.seqs != 1) err = "duo: --parallel 1 only";
-        else if (chunk > 0 || par) err = "duo: the windowed path only (--prefill-chunk 0, DS4_NO_CHUNKS=1, --threads off)";
+        else if (par) err = "duo: --threads off, --tp 1";
         else {
             // a KV source the other host writes cannot be read here: the cut must not part a source from its readers
             for (int il = 0; il < g.nl; ++il) {
@@ -13559,6 +13644,100 @@ struct Model::Impl {
         CK(cudaMemcpyAsync(d.cand, bb + n[0] + n[1] + n[2], n[3], cudaMemcpyHostToDevice, d.st));
         return true;
     }
+    // ---- a run of chunks across the hosts (forward_chunks): chunk k's hand-off, T rows of h | pre | topk | cand as
+    // chunk_xfer lays them out - one stream of T * 92 KB, read and written in whole (Link::put / get loop over it)
+    bool duo_run_sent = false;             // the suffix host told the prefix host of the run under way
+    std::vector<uint8_t> duo_hand[2];      // the prefix host: [0]; the suffix host: chunk k's in k % 2, until its copy is done
+    cudaEvent_t duo_hand_ev[2] = {nullptr, nullptr};
+    double duo_cwait_ms = 0.0, duo_cio_ms = 0.0;
+    int64_t duo_chunks = 0, duo_chunk_rows = 0, duo_runs = 0;
+    size_t duo_row_bytes() const { return (size_t) g.hc * g.dim * 4 + 8 * 4 + (size_t) topk_stride() * 4 + (size_t) cand_stride() * 4; }
+    // the prefix host: chunk k through its layers - its rows to the suffix host
+    bool duo_give_chunk(Dev& d, Chunk& c, int k, int T, std::string& err) {
+        const size_t all = (size_t) T * duo_row_bytes();
+        if (duo_hand[0].size() < all) duo_hand[0].resize(std::max(all, chunk_hand_bytes()));
+        const Xfer x = chunk_xfer(duo_hand[0].data(), c, T, true);
+        cudaSetDevice(d.id);
+        for (int i = 0; i < x.n; ++i) CK(cudaMemcpyAsync(x.dst[i], x.src[i], x.bytes[i], cudaMemcpyDeviceToHost, d.st));
+        CK(cudaStreamSynchronize(d.st));
+        const double t0 = now_ms();
+        if (!dl.send(duo::kHand, T, k, duo_hand[0].data(), all)) {
+            err = "duo: the link to the suffix host is gone";
+            return false;
+        }
+        duo_cio_ms += now_ms() - t0;
+        ++duo_chunks;
+        duo_chunk_rows += T;
+        return true;
+    }
+    // the suffix host: chunk k's rows from the prefix host into the chunk's buffers (its first layer's input)
+    bool duo_take_chunk(Dev& d, Chunk& c, int k, int T, std::string& err) {
+        const size_t all = (size_t) T * duo_row_bytes();
+        const int slot = k & 1;
+        cudaSetDevice(d.id);
+        if (duo_hand_ev[slot] == nullptr) CK(cudaEventCreateWithFlags(&duo_hand_ev[slot], cudaEventDisableTiming));
+        else CK(cudaEventSynchronize(duo_hand_ev[slot]));   // (the chunk before last's copy out of this buffer: done)
+        if (duo_hand[slot].size() < all) duo_hand[slot].resize(std::max(all, chunk_hand_bytes()));
+        duo::Head h;
+        const double t0 = now_ms();
+        if (!dl.recv_head(h)) {
+            err = "duo: the link to the prefix host is gone";
+            return false;
+        }
+        if (h.op != duo::kHand || h.a != T || h.b != k || h.bytes != all) {
+            std::string msg(h.op == duo::kErr ? (size_t) std::min<uint64_t>(h.bytes, 4096) : 0, '\0');
+            if (!msg.empty()) dl.get(&msg[0], msg.size());
+            err = "duo: the prefix host: " + (msg.empty() ? "an unexpected answer for chunk " + std::to_string(k) : msg);
+            dl.close();
+            return false;
+        }
+        if (!dl.get(duo_hand[slot].data(), all)) {
+            err = "duo: the link to the prefix host is gone";
+            return false;
+        }
+        duo_cwait_ms += now_ms() - t0;
+        ++duo_chunks;
+        duo_chunk_rows += T;
+        const Xfer x = chunk_xfer(duo_hand[slot].data(), c, T, false);
+        for (int i = 0; i < x.n; ++i) CK(cudaMemcpyAsync(x.dst[i], x.src[i], x.bytes[i], cudaMemcpyHostToDevice, d.st));
+        CK(cudaEventRecord(duo_hand_ev[slot], d.st));
+        return true;
+    }
+    // the prefix host: a run of chunks the suffix host began (kChunks) - the same chunks through this host's layers,
+    // each one's hand-off sent on the way, the run's restore points kept from this host's layers
+    bool duo_serve_chunks(const duo::Head& h, std::string& err) {
+        const int64_t n = h.b;
+        duo::ChunksPlan pl;
+        if (n < 1 || n > o.max_context || h.bytes < sizeof pl || h.a != pos) {
+            err = "duo: a run at " + std::to_string(h.a) + " of " + std::to_string(n) + " tokens, this host is at " + std::to_string(pos);
+            return false;
+        }
+        if (!dl.get(&pl, sizeof pl)) {
+            err = "duo: the link closed in a run's call";
+            return false;
+        }
+        if (pl.n_inner < 0 || pl.n_inner >= kSnapN || h.bytes != sizeof pl + (uint64_t) pl.n_inner * 16 + (uint64_t) n * 4) {
+            err = "duo: a run's call of the wrong size";
+            return false;
+        }
+        std::vector<std::pair<int64_t, bool>> inner;
+        for (int j = 0; j < pl.n_inner; ++j) {
+            int64_t pr[2];
+            if (!dl.get(pr, 16)) {
+                err = "duo: the link closed in a run's call";
+                return false;
+            }
+            inner.push_back({pr[0], pr[1] != 0});
+        }
+        std::vector<int> tk((size_t) n);
+        if (!dl.get(tk.data(), (size_t) n * 4)) {
+            err = "duo: the link closed in a run's call";
+            return false;
+        }
+        ++duo_runs;
+        return forward_chunks(tk.data(), (int) n, 0, err, pl.snap_slot, pl.after, pl.n_inner > 0 ? &inner : nullptr, &pl);
+    }
+
     // the prefix host's loop: the suffix host's calls, each run on this host's layers
     bool duo_serve(std::string& err) {
         if (o.duo_role != 1) {
@@ -13607,6 +13786,12 @@ struct Model::Impl {
                 }
                 break;
             }
+            case duo::kChunks:
+                if (!duo_serve_chunks(h, err)) {
+                    dl.send(duo::kErr, 0, 0, err.data(), err.size());
+                    return false;
+                }
+                break;
             case duo::kReset: reset(); break;
             case duo::kCheckpoint: checkpoint((int) h.a); break;
             case duo::kMark: mark(h.a != 0); break;
@@ -15065,15 +15250,27 @@ bool Model::load(const Options& o, std::string& err) { return p_->load(o, err) &
 bool Model::duo_serve(std::string& err) { return p_->duo_serve(err); }
 std::string Model::duo_report() const {
     const Impl& p = *p_;
-    if (p.o.duo_role == 0 || p.duo_windows == 0) return "";
+    if (p.o.duo_role == 0 || (p.duo_windows == 0 && p.duo_chunks == 0)) return "";
     char b[256];
+    std::string out;
+    if (p.duo_chunks > 0) {   // (the runs of chunks: the suffix host's wait is the prefix host's layers and the link)
+        const double gb = (double) p.duo_chunk_rows * (double) p.duo_row_bytes() / 1e9;
+        if (p.o.duo_role == 2)
+            std::snprintf(b, sizeof b, "duo suffix: %lld chunks (%lld rows, %.2f GB of hand-offs, chunks of %d); waited %.0f ms for them\n",
+                          (long long) p.duo_chunks, (long long) p.duo_chunk_rows, gb, p.chunk, p.duo_cwait_ms);
+        else
+            std::snprintf(b, sizeof b, "duo prefix: %lld runs, %lld chunks (%lld rows, %.2f GB of hand-offs, chunks of %d); %.0f ms sending them\n",
+                          (long long) p.duo_runs, (long long) p.duo_chunks, (long long) p.duo_chunk_rows, gb, p.chunk, p.duo_cio_ms);
+        out += b;
+    }
+    if (p.duo_windows == 0) return out;
     if (p.o.duo_role == 2)
         std::snprintf(b, sizeof b, "duo suffix: %lld windows; waited %.0f ms for the prefix host's hand-offs (%.1f ms a window: its layers and the link)\n",
                       (long long) p.duo_windows, p.duo_wait_ms, p.duo_wait_ms / (double) p.duo_windows);
     else
         std::snprintf(b, sizeof b, "duo prefix: %lld windows; %.0f ms sending the hand-offs (%.2f ms a window)\n", (long long) p.duo_windows,
                       p.duo_io_ms, p.duo_io_ms / (double) p.duo_windows);
-    return b;
+    return out + b;
 }
 bool Model::step(int token, bool logits, std::string& err) { return p_->step(token, logits, err); }
 bool Model::feed(const int* tokens, int n, int logits_rows, std::string& err, int after) {

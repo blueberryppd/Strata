@@ -2617,9 +2617,16 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "--multi-check needs --parallel 2..8 and --ids\n");
         return 2;
     }
-    if (o.duo_role != 0) {   // Strata Duo: text, one conversation, the windowed path, no drafter (ds4_duo.hpp)
-        o.dspark = false, o.dspark_auto = false, o.seqs = 1, o.prefill_chunk = 0, o.threads = false, o.tp = 1, o.vision = false;
-        setenv("DS4_NO_CHUNKS", "1", 1);
+    if (o.duo_role != 0) {   // Strata Duo: text, one conversation, no drafter (ds4_duo.hpp)
+        o.dspark = false, o.dspark_auto = false, o.seqs = 1, o.threads = false, o.tp = 1, o.vision = false;
+        // a long prompt: in chunks of --prefill-chunk rows across the two hosts (both hosts the same number; not given:
+        // DS4_DUO_CHUNK, else kDuoChunk), or --prefill-chunk 0: windows of 16 as Duo v0 read every prompt.
+        // kDuoChunk, measured over loopback on one M5 Ultra (Coder pack, --vram-experts 0, a 4,200-token prompt;
+        // tokens/s): 256 245, 512 310, 1024 364, 2048 412, 4096 420 - windows of 16: 24.  2048: a hand-off of 189 MB
+        // (the suffix host holds two, the prefix host one), most of 4096's speed at half its buffers
+        static const int kDuoChunk = 2048;
+        if (o.prefill_chunk < 0) o.prefill_chunk = std::getenv("DS4_DUO_CHUNK") ? std::max(0, std::atoi(std::getenv("DS4_DUO_CHUNK"))) : kDuoChunk;
+        if (o.prefill_chunk == 0) setenv("DS4_NO_CHUNKS", "1", 1);
         std::string why;   // (the link's security, before the load: TLS with --duo-certs, or an explicit --duo-insecure)
         if (!strata::ds4::duo::link_preflight(o.duo_role, o.duo_certs, o.duo_insecure, why)) {
             std::fprintf(stderr, "maya-ds4: %s\n", why.c_str());
