@@ -1460,6 +1460,10 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
                            off, acc, err, r.cum)) {
                     if (gpu_fatal_text(err)) die_gpu_fatal(err);
                     std::fprintf(stderr, "ds4: %s\n", err.c_str());
+                    if (m.duo_lost()) {   // (Strata Duo: not a cancelled answer - the client is told it is cut short, as for the NaN stop)
+                        std::printf("ERR the other host of the pair stopped answering, so this answer is incomplete: the pair starts again with the next request\n");
+                        std::fflush(stdout);
+                    }
                     finish = "cancel";
                     break;
                 }
