@@ -7328,12 +7328,24 @@ struct Model::Impl {
     int64_t src_rows(const Src& s, int64_t at = -1) const { return (at < 0 ? pos : at) / std::max(1, s.ratio); }
 
     // the slot's bytes: the header, the tokens, every layer's ring and partial group, every source's rows, the end
-    size_t slot_bytes(int64_t at = -1) const {
+    // (Strata Duo: a host's slot is its half - its own layers' rings, groups and sources; the other host's layers,
+    // which never run here and hold zeros, are an empty ring and group, their sources no rows.  `other`: the size of
+    // the other host's half.  One host: every layer is its own, the bytes are what they always were.)
+    bool slot_has(const Layer& l, bool other = false) const { return l.foreign == other; }
+    size_t slot_check_bytes(bool other = false) const {
+        size_t n = 16;
+        for (const Layer& l : L)
+            if (slot_has(l, other)) n += (size_t) g.win * win_rb() + (l.c_kv ? 2 * (size_t) l.ratio * g.hd * 4 : 0);
+        return n;
+    }
+    size_t slot_bytes(int64_t at = -1, bool other = false) const {
         const int64_t ep = at < 0 ? pos : at;
-        size_t n = 8 + 8 + slot_identity().size() + 8 + (size_t) ep * 4;
-        for (const Layer& l : L) n += 8 + (size_t) g.win * win_rb() + 8 + (l.c_kv ? 2 * (size_t) l.ratio * g.hd * 4 : 0);
-        for (const Src& s : srcs) n += 8 + (size_t) src_rows(s, ep) * (ckv_rb() + ik_rb());
-        n += 8 + slot_checks(ep).size() * check_bytes();   // (the checkpoints: what the slot can be taken back at)
+        size_t n = 8 + 8 + slot_half_identity().size() + 8 + (size_t) ep * 4;
+        for (const Layer& l : L)
+            n += 16 + (slot_has(l, other) ? (size_t) g.win * win_rb() + (l.c_kv ? 2 * (size_t) l.ratio * g.hd * 4 : 0) : 0);
+        for (const Src& s : srcs)
+            n += 8 + (slot_has(L[(size_t) s.layer], other) ? (size_t) src_rows(s, ep) * (ckv_rb() + ik_rb()) : 0);
+        n += 8 + slot_checks(ep).size() * slot_check_bytes(other);   // (the checkpoints: what the slot can be taken back at)
         return n + 8;
     }
 
@@ -7341,7 +7353,8 @@ struct Model::Impl {
     // on past it - the window rings and partial groups from that mark, the compressed KV and index keys of rows 0 .. at / ratio
     // (the rows a position completed never change), the tokens up to it.  The mark stays; the slot holds the checkpoints
     // at or before it.  (A shared start kept from a read that went on past it: #607 without a stop at the start.)
-    uint64_t slot_save(std::vector<uint8_t>& out, std::string& err, int64_t at = -1) {
+    // (`front`: bytes left free before the slot in `out` - Duo's header, duo_slot_save)
+    uint64_t slot_save(std::vector<uint8_t>& out, std::string& err, int64_t at = -1, size_t front = 0) {
         const Check* at_mark = nullptr;
         if (at >= 0 && at != pos) {
             for (const Check& x : mk)
@@ -7369,9 +7382,9 @@ struct Model::Impl {
             err = "it holds pictures";
             return 0;
         }
-        const std::string id = slot_identity();
-        out.assign(slot_bytes(at), 0);
-        uint8_t* p = out.data();
+        const std::string id = slot_half_identity();
+        out.assign(front + slot_bytes(at), 0);
+        uint8_t* p = out.data() + front;
         size_t off = 0;
         const auto put = [&](const void* s, size_t b) {
             std::memcpy(p + off, s, b);
@@ -7391,16 +7404,17 @@ struct Model::Impl {
             const Layer& l = L[i];
             const Dev& d = devs[(size_t) l.dev];
             cudaSetDevice(d.id);
-            const uint64_t wb = (uint64_t) g.win * win_rb();
+            const uint64_t wb = slot_has(l) ? (uint64_t) g.win * win_rb() : 0;   // (Duo: the other host's layer - nothing)
             put(&wb, 8);
-            if (at_mark != nullptr) {   // (the ring and the partial group as the mark kept them)
+            if (wb == 0) {
+            } else if (at_mark != nullptr) {   // (the ring and the partial group as the mark kept them)
                 std::memcpy(p + off, at_mark->win[i].data(), (size_t) wb);
             } else if (cudaMemcpy(p + off, l.win, (size_t) wb, cudaMemcpyDeviceToHost) != cudaSuccess) {
                 err = l.name + "window ring: " + cudaGetErrorString(cudaGetLastError());
                 return 0;
             }
             off += (size_t) wb;
-            const uint64_t cn = l.c_kv ? (uint64_t) l.ratio * (uint64_t) g.hd : 0;
+            const uint64_t cn = l.c_kv && slot_has(l) ? (uint64_t) l.ratio * (uint64_t) g.hd : 0;
             put(&cn, 8);
             if (cn > 0) {
                 const size_t cb = (size_t) cn * 4;
@@ -7416,7 +7430,7 @@ struct Model::Impl {
             }
         }
         for (const Src& s : srcs) {
-            const uint64_t rows = (uint64_t) src_rows(s, ep);
+            const uint64_t rows = slot_has(L[(size_t) s.layer]) ? (uint64_t) src_rows(s, ep) : 0;
             put(&rows, 8);
             if (rows == 0) continue;
             const int di = L[(size_t) s.layer].dev;
@@ -7445,6 +7459,7 @@ struct Model::Impl {
                 put(&role, 8);
                 put(&cp, 8);
                 for (size_t i = 0; i < L.size(); ++i) {
+                    if (!slot_has(L[i])) continue;
                     put(c.win[i].data(), (size_t) g.win * win_rb());
                     if (L[i].c_kv) {
                         put(c.comp[2 * i].data(), (size_t) L[i].ratio * g.hd * 4);
@@ -7453,7 +7468,7 @@ struct Model::Impl {
                 }
             }
         }
-        if (off + 8 != out.size()) {
+        if (front + off + 8 != out.size()) {
             err = "the state's size does not add up";
             return 0;
         }
@@ -7462,7 +7477,10 @@ struct Model::Impl {
         return (uint64_t) off;
     }
 
-    bool slot_load(const uint8_t* data, size_t bytes, int64_t n_pos, std::string& err) {
+    // (`peek`: the slot's head alone - is it this model's, this host's, this position's - nothing is written;
+    // `reset_done`: set when a load that failed left the state reset)
+    bool slot_load(const uint8_t* data, size_t bytes, int64_t n_pos, std::string& err, bool peek = false,
+                   bool* reset_done = nullptr) {
         size_t off = 0;
         bool wrote = false, ok = false;
         // a load that stops after some of another conversation's state went into the layers leaves a state no
@@ -7471,10 +7489,14 @@ struct Model::Impl {
             Impl& p;
             const bool& wrote;
             const bool& ok;
+            bool* reset_done;
             ~FailClosed() {
-                if (!ok && wrote) p.reset();
+                if (!ok && wrote) {
+                    p.reset();
+                    if (reset_done != nullptr) *reset_done = true;
+                }
             }
-        } guard{*this, wrote, ok};
+        } guard{*this, wrote, ok, reset_done};
         const auto room = [&](size_t b) { return b <= bytes && off <= bytes - b; };
         uint64_t magic = 0, il = 0, n = 0;
         if (!room(16)) {
@@ -7484,6 +7506,10 @@ struct Model::Impl {
         std::memcpy(&magic, data + off, 8);
         std::memcpy(&il, data + off + 8, 8);
         off += 16;
+        if (magic == kDuoSlotMagic) {   // (the two halves of a pair of hosts, duo_slot_save: no one host's state)
+            err = "a Strata Duo conversation (the halves of two hosts), not one host's";
+            return false;
+        }
         if (magic != kSlotMagic || il == 0 || il > (1u << 20)) {
             err = "not a saved conversation";
             return false;
@@ -7498,8 +7524,9 @@ struct Model::Impl {
             off += (size_t) il;
             std::memcpy(&n, data + off, 8);
             off += 8;
-            if (id != slot_identity()) {
+            if (id != slot_half_identity()) {
                 err = "another model's, or another engine version's, conversation";
+                if (o.duo_role != 0) err += id.find(" duo-cut=") == std::string::npos ? " (one host's, not a Strata Duo half)" : " (or another cut's, or the other host's half)";
                 return false;
             }
         }
@@ -7507,6 +7534,7 @@ struct Model::Impl {
             err = "the conversation's position is not this prompt's";
             return false;
         }
+        if (peek) return ok = true;
         std::vector<int32_t> toks_in((size_t) n);
         std::memcpy(toks_in.data(), data + off, (size_t) n * 4);
         off += (size_t) n * 4;
@@ -7525,12 +7553,12 @@ struct Model::Impl {
             }
             std::memcpy(&wb, data + off, 8);
             off += 8;
-            if (wb != (uint64_t) g.win * win_rb() || !room((size_t) wb + 8)) {
+            if (wb != (slot_has(l) ? (uint64_t) g.win * win_rb() : 0) || !room((size_t) wb + 8)) {
                 err = l.name + "window ring of another size";
                 return false;
             }
-            wrote = true;
-            for (int m = 0; m < l.nm; ++m) {
+            if (wb > 0) wrote = true;
+            for (int m = 0; m < l.nm && wb > 0; ++m) {
                 Layer& lm = member(l, m);
                 cudaSetDevice(devs[(size_t) lm.dev].id);   // (a tensor-parallel group's members sit on different GPUs: #4350)
                 if (cudaMemcpy(lm.win, data + off, (size_t) wb, cudaMemcpyHostToDevice) != cudaSuccess) {
@@ -7541,7 +7569,7 @@ struct Model::Impl {
             off += (size_t) wb;
             std::memcpy(&cn, data + off, 8);
             off += 8;
-            if (cn != (l.c_kv ? (uint64_t) l.ratio * (uint64_t) g.hd : 0)) {
+            if (cn != (l.c_kv && slot_has(l) ? (uint64_t) l.ratio * (uint64_t) g.hd : 0)) {
                 err = l.name + "compressor's group of another size";
                 return false;
             }
@@ -7571,7 +7599,7 @@ struct Model::Impl {
             }
             std::memcpy(&rows, data + off, 8);
             off += 8;
-            if (rows != (uint64_t) (n_pos / std::max(1, s.ratio))) {
+            if (rows != (slot_has(L[(size_t) s.layer]) ? (uint64_t) (n_pos / std::max(1, s.ratio)) : 0)) {
                 err = "source layer " + std::to_string(s.layer) + "'s rows are not this conversation's";
                 return false;
             }
@@ -7633,6 +7661,14 @@ struct Model::Impl {
                 c.comp.resize(L.size() * 2);
                 for (size_t i = 0; i < L.size(); ++i) {
                     const size_t wb = (size_t) g.win * win_rb(), cb = L[i].c_kv ? (size_t) L[i].ratio * g.hd * 4 : 0;
+                    if (!slot_has(L[i])) {   // (Duo: the other host's layer, idle here - zeros, as snap_into finds it)
+                        c.win[i].assign(wb, 0);
+                        if (cb > 0) {
+                            c.comp[2 * i].assign(cb / 4, 0.0f);
+                            c.comp[2 * i + 1].assign(cb / 4, 0.0f);
+                        }
+                        continue;
+                    }
                     if (!room(wb + 2 * cb)) {
                         err = "the slot is cut short";
                         return false;
@@ -7697,7 +7733,188 @@ struct Model::Impl {
            << " tensors.txt:" << size_of(pk.dir + "/tensors.txt");
         for (size_t i = 0; i < pk.files.size(); ++i)
             id << " " << pk.files[i] << ":" << os::file_size(pk.fds[i]);
+        // (Strata Duo: a pair's conversations are the two hosts' halves at this cut - not one host's, nor another cut's)
+        if (o.duo_role != 0) id << " duo-cut=" << o.duo_cut;
         return id.str();
+    }
+    // what a host's own slot bytes name (Duo: which half they are)
+    std::string slot_half_identity() const {
+        return o.duo_role == 0 ? slot_identity() : slot_identity() + (o.duo_role == 1 ? " half=prefix" : " half=suffix");
+    }
+
+    // ---- Strata Duo: a conversation set aside is the two hosts' halves in one blob, which the suffix host hands out
+    // and takes back (the server's RAM and folder slots hold it whole: a prefix host that restarts has lost nothing):
+    //   u64 "DS4DUOS1", u64 cut, u64 layers, u64 position, u64 suffix half's bytes, u64 prefix half's bytes,
+    //   the suffix host's half, the prefix host's half (each a slot_save of its host: its layers' state only, its
+    //   identity ending in the cut and the half's name), u64 "DS4DUOS1"
+    static constexpr uint64_t kDuoSlotMagic = 0x31534f5544345344ull;   // "DS4DUOS1" (little endian)
+    static constexpr size_t kDuoSlotHead = 48;
+    std::vector<uint8_t> duo_slot;   // the prefix host: its half on its way out or in
+
+    // the suffix host: its half, then the prefix host's over the link.  0 and err: nothing was set aside, and nothing
+    // changed on either host (the prefix host refused, or the link is gone - closed, then)
+    uint64_t duo_slot_save(std::vector<uint8_t>& out, std::string& err, int64_t at) {
+        if (!dl.open()) {
+            err = "duo: the link to the prefix host is gone";
+            return 0;
+        }
+        const bool held = slot_held;
+        const double t0 = now_ms();
+        if (at >= 0 && at == pos) at = -1;
+        out.clear();
+        if (at <= pos)   // (room for both halves: no copy when the other arrives)
+            out.reserve(kDuoSlotHead + slot_bytes(at) + slot_bytes(at, true) + 8);
+        const uint64_t mine = slot_save(out, err, at, kDuoSlotHead);
+        if (mine == 0) return 0;
+        const double t1 = now_ms();
+        const auto undo = [&](const std::string& why) {
+            slot_held = held;
+            std::vector<uint8_t>().swap(out);
+            err = why;
+            return (uint64_t) 0;
+        };
+        duo::Head h;
+        if (!dl.send(duo::kSlotSave, at) || !dl.recv_head(h)) {
+            dl.close();
+            return undo("duo: the link to the prefix host is gone");
+        }
+        if (h.op != duo::kSlot) {
+            std::string msg(h.op == duo::kErr ? (size_t) std::min<uint64_t>(h.bytes, 4096) : 0, '\0');
+            if (h.op != duo::kErr || h.bytes > 4096 || (!msg.empty() && !dl.get(&msg[0], msg.size()))) {
+                dl.close();   // (out of step)
+                return undo("duo: the prefix host: an unexpected answer");
+            }
+            return undo("duo: the prefix host: " + msg);
+        }
+        if (h.bytes < 32 || h.bytes > slot_bytes(at, true) + (1u << 20)) {
+            dl.close();
+            return undo("duo: the prefix host's half is of an impossible size");
+        }
+        const uint64_t theirs = h.bytes;
+        out.resize(kDuoSlotHead + (size_t) mine + (size_t) theirs + 8);
+        if (!dl.get(out.data() + kDuoSlotHead + (size_t) mine, (size_t) theirs)) {
+            dl.close();
+            return undo("duo: the link to the prefix host is gone");
+        }
+        const uint64_t head[6] = {kDuoSlotMagic, (uint64_t) o.duo_cut, (uint64_t) g.nl, (uint64_t) (at < 0 ? pos : at), mine, theirs};
+        std::memcpy(out.data(), head, sizeof head);
+        std::memcpy(out.data() + out.size() - 8, &kDuoSlotMagic, 8);
+        std::fprintf(stderr, "ds4 duo: a %lld-token conversation set aside: this host's half %.1f MB in %.0f ms, the prefix host's %.1f MB "
+                             "in %.0f ms\n", (long long) head[3], (double) mine / 1e6, t1 - t0, (double) theirs / 1e6, now_ms() - t1);
+        return (uint64_t) out.size();
+    }
+
+    // the suffix host: a pair's conversation back into both hosts.  false: neither host holds it - both are as they
+    // were (the blob was refused before anything was written), or both are reset
+    bool duo_slot_load(const uint8_t* data, size_t bytes, int64_t n_pos, std::string& err) {
+        uint64_t head[6] = {}, end = 0;
+        if (bytes >= 8) std::memcpy(head, data, 8);
+        if (bytes >= 8 && head[0] == kSlotMagic) {
+            err = "one host's conversation, not a Strata Duo pair's (it holds every layer in one piece; this pair is cut at layer " +
+                  std::to_string(o.duo_cut) + ")";
+            return false;
+        }
+        if (bytes < kDuoSlotHead + 8 || head[0] != kDuoSlotMagic) {
+            err = bytes < kDuoSlotHead + 8 ? "the slot is cut short" : "not a saved conversation";
+            return false;
+        }
+        std::memcpy(head, data, sizeof head);
+        if (head[1] != (uint64_t) o.duo_cut || head[2] != (uint64_t) g.nl) {
+            err = "a Strata Duo conversation cut at layer " + std::to_string(head[1]) + " of " + std::to_string(head[2]) +
+                  ": this pair is cut at layer " + std::to_string(o.duo_cut) + " of " + std::to_string(g.nl);
+            return false;
+        }
+        if (head[3] != (uint64_t) n_pos || n_pos <= 0 || n_pos > o.max_context) {
+            err = "the conversation's position is not this prompt's";
+            return false;
+        }
+        if (head[4] > bytes || head[5] > bytes || kDuoSlotHead + head[4] + head[5] + 8 != bytes) {
+            err = "the slot is cut short";
+            return false;
+        }
+        std::memcpy(&end, data + bytes - 8, 8);
+        if (end != kDuoSlotMagic) {
+            err = "the slot does not end where it should";
+            return false;
+        }
+        const uint8_t* mine = data + kDuoSlotHead;
+        const uint8_t* theirs = mine + head[4];
+        if (!slot_load(mine, (size_t) head[4], n_pos, err, true)) return false;   // (this host's half's head: before anything is sent)
+        if (!dl.open()) {
+            err = "duo: the link to the prefix host is gone";
+            return false;
+        }
+        const double t0 = now_ms();
+        duo::Head h;
+        if (!dl.send(duo::kSlotLoad, n_pos, 0, theirs, (size_t) head[5]) || !dl.recv_head(h)) {
+            dl.close();   // (what the prefix host holds now is not known: no call reaches it again)
+            reset();
+            err = "duo: the link to the prefix host is gone";
+            return false;
+        }
+        if (h.op != duo::kOk) {
+            std::string msg(h.op == duo::kErr ? (size_t) std::min<uint64_t>(h.bytes, 4096) : 0, '\0');
+            if (h.op != duo::kErr || h.bytes > 4096 || (!msg.empty() && !dl.get(&msg[0], msg.size()))) {
+                dl.close();
+                reset();
+                err = "duo: the prefix host: an unexpected answer";
+                return false;
+            }
+            if (h.a != 0) reset();   // (it wrote some of the half and reset itself: this host too - the prompt is read from token 0)
+            err = "duo: the prefix host: " + msg;
+            return false;
+        }
+        const double t1 = now_ms();
+        if (!slot_load(mine, (size_t) head[4], n_pos, err)) {
+            reset();   // (the prefix host holds the conversation, this host does not: both reset)
+            return false;
+        }
+        std::fprintf(stderr, "ds4 duo: a %lld-token conversation taken back: the prefix host's half %.1f MB in %.0f ms, this host's "
+                             "%.1f MB in %.0f ms\n", (long long) n_pos, (double) head[5] / 1e6, t1 - t0, (double) head[4] / 1e6, now_ms() - t1);
+        return true;
+    }
+    // (tests, the prefix host: DS4_DUO_SLOT_TEST=1 refuses to give its half, 2 refuses to take one, 3 takes one whose
+    // end is damaged - it fails after its layers were written, so the host resets)
+    static int duo_slot_test() {
+        const char* v = std::getenv("DS4_DUO_SLOT_TEST");
+        return v != nullptr ? std::atoi(v) : 0;
+    }
+    // the prefix host's side of the two: false - the link is gone
+    bool duo_serve_slot_save(const duo::Head& h) {
+        std::string e;
+        slot_held = false;   // (whether the conversation is already set aside is the suffix host's to say)
+        const int test = duo_slot_test();
+        const uint64_t n = test == 1 ? 0 : slot_save(duo_slot, e, h.a);
+        if (test == 1) e = "DS4_DUO_SLOT_TEST=1: the half is refused";
+        const bool sent = n == 0 ? dl.send(duo::kErr, 0, 0, e.data(), e.size()) : dl.send(duo::kSlot, h.a, 0, duo_slot.data(), (size_t) n);
+        std::vector<uint8_t>().swap(duo_slot);
+        return sent;
+    }
+    bool duo_serve_slot_load(const duo::Head& h) {
+        std::string e;
+        bool was_reset = false, ok = false;
+        // (the largest half there can be: the whole context, every restore point)
+        const size_t most = slot_bytes(o.max_context) + (size_t) (3 + kMarksMax) * slot_check_bytes() + (1u << 20);
+        if (h.bytes > most) {   // (not a half of this model: read past it, the link stays in step)
+            duo_slot.resize(1u << 20);
+            for (uint64_t left = h.bytes; left > 0;) {
+                const size_t k = (size_t) std::min<uint64_t>(left, duo_slot.size());
+                if (!dl.get(duo_slot.data(), k)) return false;
+                left -= k;
+            }
+            e = "a half of an impossible size";
+        } else {
+            duo_slot.resize((size_t) h.bytes);
+            if (!dl.get(duo_slot.data(), duo_slot.size())) return false;
+            const int test = duo_slot_test();
+            if (test == 2) e = "DS4_DUO_SLOT_TEST=2: the half is refused";
+            else {
+                if (test == 3 && duo_slot.size() > 16) std::memset(duo_slot.data() + duo_slot.size() - 16, 0xff, 16);
+                ok = slot_load(duo_slot.data(), duo_slot.size(), h.a, e, false, &was_reset);
+            }
+        }
+        std::vector<uint8_t>().swap(duo_slot);
+        return ok ? dl.send(duo::kOk) : dl.send(duo::kErr, was_reset ? 1 : 0, 0, e.data(), e.size());
     }
 
     size_t bounce_bytes() const {
@@ -13541,7 +13758,7 @@ struct Model::Impl {
     // what both hosts must agree on: the engine, the model's geometry and files (by size), the cut and the context
     std::string duo_identity() const {
         std::ostringstream id;
-        id << "strata-ds4-duo-1 engine=" << STRATA_VERSION << " nl=" << g.nl << " dim=" << g.dim << " hd=" << g.hd << " hc=" << g.hc
+        id << "strata-ds4-duo-2 engine=" << STRATA_VERSION << " nl=" << g.nl << " dim=" << g.dim << " hd=" << g.hd << " hc=" << g.hc
            << " win=" << g.win << " topk=" << topk_stride() << " cand=" << cand_stride() << " ratios=";
         for (int r : g.ratios) id << r << ",";
         id << " kv=";
@@ -13553,6 +13770,7 @@ struct Model::Impl {
             id << " " << (sl == std::string::npos ? pk.files[i] : pk.files[i].substr(sl + 1)) << ":" << os::file_size(pk.fds[i]);
         }
         id << " cut=" << o.duo_cut << " ctx=" << o.max_context << " chunk=" << chunk;   // (chunk: a run's hand-offs fit both)
+        id << " points=" << marks_cap();   // (the restore points a conversation keeps: both hosts give up the same ones)
         return id.str();
     }
     bool duo_check(std::string& err) const {
@@ -13805,6 +14023,12 @@ struct Model::Impl {
             case duo::kMark: mark(h.a != 0); break;
             case duo::kPin: pin(); break;
             case duo::kRestore: restore(h.a); break;
+            case duo::kSlotSave:
+                if (!duo_serve_slot_save(h)) return true;
+                break;
+            case duo::kSlotLoad:
+                if (!duo_serve_slot_load(h)) return true;
+                break;
             case duo::kBye: return true;
             default:
                 err = "duo: an unknown call " + std::to_string(h.op);
@@ -15436,17 +15660,19 @@ void Model::pin() { p_->pin(); }
 std::vector<int64_t> Model::check_positions() const { return p_->check_positions(); }
 int64_t Model::restorable(int64_t limit) const { return p_->restorable(limit); }
 uint64_t Model::slot_save(std::vector<uint8_t>& out, std::string& err, int64_t at) {
-    if (p_->o.duo_role != 0) {   // (Duo: a conversation set aside would be two halves on two hosts - not yet)
-        err = "duo: conversations are not set aside";
+    if (p_->o.duo_role == 1) {   // (Duo: a conversation set aside is both hosts' halves, in the suffix host's blob)
+        err = "duo: the suffix host sets the pair's conversations aside";
         return 0;
     }
+    if (p_->o.duo_role == 2) return p_->duo_slot_save(out, err, at);
     return p_->slot_save(out, err, at);
 }
 bool Model::slot_load(const uint8_t* data, size_t bytes, int64_t n_pos, std::string& err) {
-    if (p_->o.duo_role != 0) {
-        err = "duo: conversations are not set aside";
+    if (p_->o.duo_role == 1) {
+        err = "duo: the suffix host takes the pair's conversations back";
         return false;
     }
+    if (p_->o.duo_role == 2) return p_->duo_slot_load(data, bytes, n_pos, err);
     return p_->slot_load(data, bytes, n_pos, err);
 }
 std::string Model::slot_identity() const { return p_->slot_identity(); }

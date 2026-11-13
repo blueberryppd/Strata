@@ -53,7 +53,13 @@
 namespace strata::ds4::duo {
 
 enum Op : uint32_t { kHello = 1, kOk = 2, kErr = 3, kForward = 4, kHand = 5, kReset = 6, kCheckpoint = 7, kMark = 8, kPin = 9,
-                     kRestore = 10, kBye = 11, kChunks = 12 };
+                     kRestore = 10, kBye = 11, kChunks = 12, kSlotSave = 13, kSlot = 14, kSlotLoad = 15 };
+// A conversation set aside (slot_save / slot_load on the coordinator) is both hosts' halves:
+//   kSlotSave (a = the restore point to save at, -1 the state as it is) -> kSlot (a the same, the payload the worker's
+//     half: its own layers' state) or kErr (why not; the worker's state is as it was)
+//   kSlotLoad (a = the conversation's position, the payload a worker's half) -> kOk, or kErr (a = 1: the worker wrote
+//     some of it and has reset itself; 0: its state is as it was)
+// Unlike the other state calls these two are answered: the coordinator returns only when both hosts agree.
 
 // kChunks' payload (a = the run's first position, b = its tokens): this, then n_inner pairs of int64 (a restore
 // point's position, 1 the end of a shared start), then the b tokens (int32)

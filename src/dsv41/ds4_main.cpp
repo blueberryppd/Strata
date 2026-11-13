@@ -874,8 +874,11 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
         return true;
     };
     if (slot_max > 0) {
+        // (Strata Duo: a pair's conversations have their own identity - both hosts' halves at this cut - and a folder of
+        // their own by default: a start removes the slots that are not its model's, and one host's are not a pair's)
+        const bool duo_pair = slot_identity.find(" duo-cut=") != std::string::npos;
         slot_dir = std::getenv("STRATA_DS4_SLOT_DIR") ? std::filesystem::path(std::getenv("STRATA_DS4_SLOT_DIR"))
-                                                      : std::filesystem::path(pack) / "slots";
+                                                      : std::filesystem::path(pack) / (duo_pair ? "slots-duo" : "slots");
         std::error_code ec;
         std::filesystem::create_directories(slot_dir, ec);
         if (!std::filesystem::is_directory(slot_dir, ec)) {

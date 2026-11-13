@@ -268,12 +268,18 @@ public:
     /// the pieces the state a prompt continues is made of.  0 and err: nothing was set aside (it holds pictures, there
     /// is no conversation, or the conversation is already set aside - unchanged since).
     /// `at` >= 0: the conversation as it stood at its restore point `at` (a mark kept by mark()), though it was read on past it.
+    /// Strata Duo (the suffix host): the blob holds both hosts' halves (the prefix host's comes over the link); 0 and
+    /// err when the prefix host refuses or the link fails - nothing is set aside, neither host's state changes.
     uint64_t slot_save(std::vector<uint8_t>& out, std::string& err, int64_t at = -1);
     /// `data` (a slot's bytes) back into the model: the state at the slot's position n_pos, as slot_save took it -
     /// what a prompt that continues the slot's tokens reads on from (the caller checked the tokens are a prefix).
+    /// Strata Duo: both halves go back, or neither - a blob refused before anything was written leaves both hosts as
+    /// they were, a failure after that resets both (the prompt is read from token 0).  One host's slot, or a pair's of
+    /// another cut, is refused by name.
     bool slot_load(const uint8_t* data, size_t bytes, int64_t n_pos, std::string& err);
     /// What a saved conversation must match: this engine's version, this model's geometry and files and the drafter's
     /// blocks - a slot naming anything else is not this model's state (a file's .meta says so; slot_load refuses).
+    /// Strata Duo: it ends in the cut (" duo-cut=K"), so a folder's slots of one host are not a pair's, nor another cut's.
     std::string slot_identity() const;
 
     /// The vision tower: the token every position of an image's span carries (-1: no tower).
