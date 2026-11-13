@@ -31,6 +31,7 @@
 #include "ds4_evt.hpp"
 #include "ds4_marks.hpp"
 #include "ds4_model.hpp"
+#include "ds4_duo.hpp"   // link_preflight
 #include "ds4_experts_rule.hpp"
 #include "ds4_os.hpp"
 #include "strata/platform/io_priority.hpp"
@@ -2527,6 +2528,8 @@ int main(int argc, char** argv) {
         else if (a == "--duo-allow") o.duo_allow = val("--duo-allow");
         else if (a == "--duo-connect") { o.duo_role = 2; o.duo_addr = val("--duo-connect"); }
         else if (a == "--duo-cut") o.duo_cut = std::atoi(val("--duo-cut").c_str());
+        else if (a == "--duo-certs") o.duo_certs = val("--duo-certs");
+        else if (a == "--duo-insecure") o.duo_insecure = true;
         else if (a == "--cpu-threads") o.cpu_threads = std::atoi(val("--cpu-threads").c_str());
         else if (a == "--expert-profile") o.profile = val("--expert-profile");
         else if (a == "--profile-readonly") o.profile_readonly = true;   // (read the placement, never write the counts back)
@@ -2617,6 +2620,11 @@ int main(int argc, char** argv) {
     if (o.duo_role != 0) {   // Strata Duo: text, one conversation, the windowed path, no drafter (ds4_duo.hpp)
         o.dspark = false, o.dspark_auto = false, o.seqs = 1, o.prefill_chunk = 0, o.threads = false, o.tp = 1, o.vision = false;
         setenv("DS4_NO_CHUNKS", "1", 1);
+        std::string why;   // (the link's security, before the load: TLS with --duo-certs, or an explicit --duo-insecure)
+        if (!strata::ds4::duo::link_preflight(o.duo_role, o.duo_certs, o.duo_insecure, why)) {
+            std::fprintf(stderr, "maya-ds4: %s\n", why.c_str());
+            return 2;
+        }
     }
     if (o.pack.empty() || (o.duo_role != 1 && !serve_mode && ids_s.empty() && enc_rgb.empty() && score_ids.empty() && prof_ids.empty() && spec_ids.empty())) {
         usage();

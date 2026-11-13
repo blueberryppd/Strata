@@ -169,6 +169,26 @@ target_include_directories(strata_ds4 PRIVATE
 target_compile_definitions(strata_ds4 PRIVATE STRATA_METAL=1)   # the real host CPU lane (ds4_gg_cpu.cpp)
 target_compile_options(strata_ds4 PRIVATE -Wno-unused-parameter -Wno-deprecated-declarations -Wno-implicit-function-declaration)
 target_link_libraries(strata_ds4 PRIVATE strata_metal_kernels strata_metal_host)
+# Strata Duo's link over TLS 1.3 with mutual authentication (src/dsv41/ds4_duo.hpp, --duo-certs).  OFF: nothing here changes,
+# strata_ds4 has the plain link only (--duo-insecure) and --duo-certs is refused.  ON: OpenSSL 3 is linked statically, from
+#   -DSTRATA_DUO_OPENSSL_ROOT=<prefix with include/openssl/ssl.h, lib/libssl.a and lib/libcrypto.a>
+option(STRATA_DUO_TLS "Strata Duo: TLS 1.3 link in strata_ds4 (static OpenSSL from STRATA_DUO_OPENSSL_ROOT)" OFF)
+set(STRATA_DUO_OPENSSL_ROOT "" CACHE PATH "OpenSSL 3 prefix for STRATA_DUO_TLS")
+if(STRATA_DUO_TLS)
+  if(NOT STRATA_DUO_OPENSSL_ROOT)
+    message(FATAL_ERROR "STRATA_DUO_TLS=ON needs -DSTRATA_DUO_OPENSSL_ROOT=<OpenSSL 3 prefix>")
+  endif()
+  file(REAL_PATH "${STRATA_DUO_OPENSSL_ROOT}" DUO_SSL BASE_DIRECTORY "${CMAKE_BINARY_DIR}" EXPAND_TILDE)
+  foreach(f include/openssl/ssl.h lib/libssl.a lib/libcrypto.a)
+    if(NOT EXISTS ${DUO_SSL}/${f})
+      message(FATAL_ERROR "STRATA_DUO_TLS: ${DUO_SSL}/${f} is missing (STRATA_DUO_OPENSSL_ROOT=${STRATA_DUO_OPENSSL_ROOT})")
+    endif()
+  endforeach()
+  target_compile_definitions(strata_ds4 PRIVATE STRATA_DUO_TLS=1)
+  target_include_directories(strata_ds4 SYSTEM PRIVATE ${DUO_SSL}/include)
+  target_link_libraries(strata_ds4 PRIVATE ${DUO_SSL}/lib/libssl.a ${DUO_SSL}/lib/libcrypto.a)
+  message(STATUS "Strata Duo: TLS link ON, static OpenSSL from ${DUO_SSL}")
+endif()
 # The commit the binary was built from, readable with --version (the root CMakeLists does the same for the CUDA and HIP builds):
 # -DSTRATA_BUILD_ID=..., else BUILD_ID beside the sources (a git archive has no .git), else git, else "unknown".
 if(NOT STRATA_BUILD_ID AND EXISTS ${STRATA_ROOT}/BUILD_ID)

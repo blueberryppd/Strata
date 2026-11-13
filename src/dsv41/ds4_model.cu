@@ -13491,7 +13491,7 @@ struct Model::Impl {
         if (!duo_check(err)) return false;
         duo_buf.resize(duo_sizes(kWin, std::array<size_t, 4>().data()));
         if (o.duo_role != 2) return true;
-        if (!dl.connect_to(o.duo_addr, err)) return false;
+        if (!dl.connect_to(o.duo_addr, o.duo_certs, o.duo_insecure, err)) return false;
         const std::string id = duo_identity();
         duo::Head h;
         if (!dl.send(duo::kHello, 0, 0, id.data(), id.size()) || !dl.recv_head(h)) {
@@ -13567,7 +13567,7 @@ struct Model::Impl {
         }
         std::fprintf(stderr, "ds4 duo: prefix host, layers [0, %d); waiting on %s for %s\n", o.duo_cut, o.duo_addr.c_str(),
                      o.duo_allow.empty() ? "any peer" : o.duo_allow.c_str());
-        if (!dl.accept_one(o.duo_addr, o.duo_allow, err)) return false;
+        if (!dl.accept_one(o.duo_addr, o.duo_allow, o.duo_certs, o.duo_insecure, err)) return false;
         duo::Head h;
         if (!dl.recv_head(h) || h.op != duo::kHello || h.bytes > 65536) {
             err = "duo: not a suffix host's greeting";

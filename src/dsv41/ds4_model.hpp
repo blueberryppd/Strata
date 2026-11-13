@@ -81,6 +81,10 @@ struct Options {
     int duo_cut = 0;
     std::string duo_addr;
     std::string duo_allow;
+    // the link's security (ds4_duo.hpp): duo_certs, a directory with ca.crt and this host's role certificate and key
+    // (TLS 1.3, mutual authentication); or duo_insecure, the plain stream.  One of the two, or Duo does not start.
+    std::string duo_certs;
+    bool duo_insecure = false;
 };
 
 /// A picture in the prompt: its span's rows (every position of the span carries the image token), BF16 [span][dim]
