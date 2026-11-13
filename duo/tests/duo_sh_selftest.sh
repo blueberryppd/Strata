@@ -192,6 +192,7 @@ printf '%s\n' "$out" | grep -E "^(FAIL|WARN)|RESULT" | cut -c1-200
 expect "doctor: every check passes on the stand-in pair" '[ "$rc" = 0 ] && ! printf "%s\n" "$out" | grep -q "^FAIL"' "$out"
 expect "doctor: certificate roles, chain and key permissions checked on both hosts" '[ "$(printf "%s\n" "$out" | grep -cE "^PASS  (this|other) Mac: (certificate role|certificate chain|key permissions)")" = 6 ]' "$out"
 expect "doctor: the pair's comparisons ran" '[ "$(printf "%s\n" "$out" | grep -cE "^PASS  (same engine build|same CA|same model files|same pack|link addresses)")" = 5 ]' "$out"
+expect "doctor: the link line names both addresses and the interface" 'printf "%s\n" "$out" | grep -qE "^PASS  link addresses: this Mac [0-9.]+ <-> other Mac [0-9.]+ on [^ ]+"' "$out"
 expect "doctor: wrote nothing" '[ ! -e "$RUN" ]'
 chmod 644 "$L/duo/certs/strata-stage-worker.key"; cp "$PD/duo/certs/strata-stage-coordinator.key" "$L/duo/certs/"
 echo "x" >> "$PH/models/engram.gguf"

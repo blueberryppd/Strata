@@ -569,7 +569,8 @@ PROBLEMS
     if [ -n "$a" ] && [ "$a" = "$b" ] && [ "$(dval "$lout" packfiles)" = "$(dval "$pout" packfiles)" ]; then line P "same pack" "ds4.txt (apart from model_dir) and the pack's files agree (names and sizes)"
     elif [ -n "$a" ] && [ -n "$b" ]; then line F "same pack" "the packs differ (this Mac: $(dval "$lout" packfiles)/ other Mac: $(dval "$pout" packfiles))" "copy the pack folder from one Mac to the other, then duo/pack_relocate.py (duo/make_pack.md)"
     else line S "same pack" "a pack is missing (see above)"; fi
-    if a=$(link_ips 2>&1); then line P "link addresses" "this Mac $LIP <-> other Mac $PIP on $IFACE"
+    # (in a subshell, for its message: so the addresses it found are printed there too)
+    if a=$(link_ips 2>&1 && printf '%s' "this Mac $LIP <-> other Mac $PIP on $IFACE"); then line P "link addresses" "$a"
     else line F "link addresses" "$a" "connect the Thunderbolt cable; both Macs should show a self-assigned $LINK_PREFIX* address on the Thunderbolt Bridge (System Settings > Network), or set LINK_LOCAL_IP and LINK_PEER_IP"; fi
   else
     echo "-- the other Mac"
