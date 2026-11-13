@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Strata Duo: brings the gate back at login and every two minutes when the service is wanted (duo.sh ensure).
+     Do not copy this template by hand: `duo/duo.sh launchagent` prints it with the placeholders filled in. -->
+<plist version="1.0"><dict>
+  <key>Label</key><string>@LABEL@</string>
+  <key>ProgramArguments</key><array><string>/bin/bash</string><string>@DUO_SH@</string><string>ensure</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>StartInterval</key><integer>120</integer>
+  <key>AbandonProcessGroup</key><true/>
+  <key>StandardOutPath</key><string>@LOG@</string>
+  <key>StandardErrorPath</key><string>@LOG@</string>
+  <key>EnvironmentVariables</key><dict>
+    <key>PATH</key><string>/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>DUO_CONF</key><string>@DUO_CONF@</string>
+  </dict>
+</dict></plist>

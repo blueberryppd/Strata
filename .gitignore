@@ -95,3 +95,25 @@ node_modules/
 /build-spark/
 /build-vision-spark/
 /.venv-build/
+
+# Strata Duo (docs/DUO.md): build dependencies, certificates and keys, local settings, logs and state
+/.duo-deps/
+/third_party/metal-cpp/
+/third_party/_metal_cpp/
+/third_party/_unpack/
+/duo/duo.conf
+/duo/certs/
+/duo/certs-new/
+/duo/run/
+/duo/tests/out/
+duo/**/*.key
+duo/**/*.crt
+duo/**/*.csr
+duo/**/*.srl
+duo/**/*.pem
+duo/**/api_key
+duo/**/api_auth.hdr
+duo/**/*.jsonl
+duo/**/gate_state.json
+duo/**/.duo_wanted
+duo/**/.duo_starting/

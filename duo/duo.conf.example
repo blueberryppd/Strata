@@ -1,0 +1,101 @@
+# Strata Duo settings. Copy to duo.conf (same folder) and edit; duo.conf is not tracked by git.
+# This file is read by bash (duo.sh sources it): VALUE or "VALUE WITH SPACES", no spaces around "=".
+# After a change: `duo.sh doctor`, then `duo.sh restart` (IDLE_MIN and BUSY_PATTERNS: `duo.sh stop`, then `start`).
+#
+# "This Mac" is the one you run duo.sh on: it runs the gate, and clients connect to it. "The other Mac" is PEER.
+# Lines written NAME=${NAME:-value} can also be given in the environment for one run:  MODEL=2.00 duo.sh restart
+
+# ---- the two Macs -----------------------------------------------------------------------------------------------
+# ssh destination of the other Mac: user@host, or a Host alias of ~/.ssh/config. `ssh -o BatchMode=yes PEER true`
+# must work without a password.
+PEER="user@other-mac.local"
+
+# Which half this Mac runs. prefix: layers 0-19 and the Engram rows. suffix: layers 20-39, the head, sampling and
+# Strata's API server. The other Mac gets the other role. The suffix half was the larger one in the measured
+# models, so give it to the Mac with more free memory.
+# The measured layout is LOCAL_ROLE=prefix (the API server on the other Mac, reached through an ssh tunnel).
+# LOCAL_ROLE=suffix is implemented but has not been run in this form: see docs/DUO.md, "What was not tested".
+LOCAL_ROLE=prefix
+
+# The install directory (this repository's checkout) on each Mac. LOCAL_DIR defaults to the checkout this duo.sh is
+# in. Paths of the other Mac may start with ~/ and are expanded there: keep them in double quotes, as below
+# (without the quotes bash would put THIS Mac's home folder in).
+#LOCAL_DIR="$HOME/strata-duo"
+PEER_DIR="~/strata-duo"
+
+# The build directory with strata_ds4, inside the install directory (the argument given to duo/build.sh; an absolute
+# path also works). To update a running pair: build into a new directory, change BUILD, `duo.sh restart`.
+BUILD=build-duo
+#LOCAL_BUILD=...   PEER_BUILD=...            # when the two Macs differ
+
+# The certificate directory of each Mac (duo/gen_certs.sh says which files go where).
+#LOCAL_CERTS="$HOME/strata-duo/duo/certs"    # default: <LOCAL_DIR>/duo/certs
+#PEER_CERTS="~/strata-duo/duo/certs"         # default: <PEER_DIR>/duo/certs
+
+# ---- the model ---------------------------------------------------------------------------------------------------
+# MODEL is a label of your choice for the model the pair loads (letters, digits, . - _). It is shown in messages,
+# names the folder of kept conversations, and can be used in the pack paths below, which makes switching between
+# two precisions a one-word change.
+MODEL=${MODEL:-2.25}
+
+# The model pack (the folder with ds4.txt and tensors.txt) on each Mac: duo/make_pack.md. Both Macs need the pack
+# and the complete model files it points to.
+LOCAL_PACK="$HOME/strata-duo/packs/deepseek-v4.1-flash-${MODEL}bpw"
+PEER_PACK="~/strata-duo/packs/deepseek-v4.1-flash-${MODEL}bpw"
+
+# The model name clients see in /v1/models.
+#MODEL_ID=deepseek-v4.1-flash
+
+# Share of each Mac's free memory given to resident experts (the engine's --vram-experts): VX1 on the prefix host,
+# VX2 on the suffix host. Lower a value when that Mac also runs other large programs.
+VX1=${VX1:-0.85}
+VX2=${VX2:-0.90}
+
+# Context size in tokens (both engines must agree; duo.sh gives both the same number).
+#CTX=65536
+
+# ---- Strata's API server (on the suffix host) ----------------------------------------------------------------------
+# The Strata control directory: the folder that holds serve/server.py, and the Python that runs it. In an installed
+# Strata app (0.2.10 is the version this branch is based on) it is the folder below, with its own Python inside.
+# The measured pair used a copy of that folder. A source checkout's root also holds serve/, but running the server
+# from a checkout with another Python was not tested.
+SUFFIX_CONTROL_DIR="/Applications/Strata.app/Contents/Resources/control"
+#SUFFIX_PYTHON="/Applications/Strata.app/Contents/Resources/control/python/bin/python3.12"   # default: <SUFFIX_CONTROL_DIR>/python/bin/python3.12
+
+# Where the server keeps conversations it set aside (on the suffix host). Default: <run folder>/slots-<MODEL>, one
+# folder a model, because a server removes another model's conversations from its folder.
+#SLOT_DIR="~/strata-duo/duo/run/slots-2.25"
+
+# ---- on-demand loading ---------------------------------------------------------------------------------------------
+# Unload the pair after this many idle minutes (0: never). The next request loads it again (about a minute).
+IDLE_MIN=${IDLE_MIN:-30}
+
+# Other heavy programs on THIS Mac that the pair must not be loaded beside. Each entry is a `pgrep -f` pattern (an
+# extended regular expression matched against whole command lines). While one matches, the gate does not load the
+# pair and a request waits. Such a program can also ask the gate to unload first: POST /duo/unload (docs/DUO.md).
+BUSY_PATTERNS=()
+#BUSY_PATTERNS=("my_render_job" "python.*train\.py")
+# Longest wait for them in seconds; after it the pair is loaded anyway (0: wait without a limit).
+#BUSY_MAX_S=2400
+
+# ---- ports (all on 127.0.0.1 except the link) ------------------------------------------------------------------------
+#APIPORT=8080       # the gate on this Mac: what clients connect to
+#BACKPORT=8081      # behind the gate on this Mac: the tunnel to the API server (or the server itself, LOCAL_ROLE=suffix)
+#SERVER_PORT=8080   # the API server's port on the other Mac's 127.0.0.1 (LOCAL_ROLE=prefix); default: APIPORT
+#PORT=50090         # the link between the two engines (on the link's addresses only)
+
+# ---- the link ----------------------------------------------------------------------------------------------------------
+# By default the two addresses are found at every start: the other Mac's addresses that begin with LINK_PREFIX are
+# pinged, the first that answers is used, and this Mac's address is taken from the interface that reaches it.
+# A Thunderbolt cable between two Macs gives both a self-assigned 169.254.x.y address, which changes after a reboot.
+#LINK_PREFIX=169.254.
+# If you gave the Thunderbolt Bridge fixed addresses on both Macs, name them instead:
+#LINK_LOCAL_IP=10.99.0.1
+#LINK_PEER_IP=10.99.0.2
+
+# ---- other ---------------------------------------------------------------------------------------------------------------
+#MIN_FREE_GB=20                         # doctor: free disk wanted where the run folder lives, on each Mac
+#LOCAL_RUN=...   PEER_RUN=...           # logs, the API key, state files; default: <install directory>/duo/run
+#GATE_PYTHON=/usr/bin/python3           # the Python that runs the gate and the benchmark (3.9 or newer, no packages)
+#SSH_OPTS=(-i "$HOME/.ssh/id_duo")      # extra ssh options for every connection to PEER
+#LAUNCHD_LABEL=local.strata-duo.ensure  # the LaunchAgent's label (duo.sh launchagent)
