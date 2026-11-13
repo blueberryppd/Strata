@@ -298,6 +298,9 @@ public:
 
     /// Strata Duo's prefix host: waits for the suffix host, then runs its calls until it leaves (true) or a failure.
     bool duo_serve(std::string& err);
+    /// Strata Duo's suffix host: the link to the prefix host is gone (a state call or a hand-off failed). The caller
+    /// ends the engine so that a supervisor starts a fresh pair: this host never answers alone.
+    bool duo_lost() const;
     /// Strata Duo: this host's share of the windows' time so far ("" without Duo).
     std::string duo_report() const;
 

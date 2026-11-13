@@ -1358,6 +1358,10 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
     };
     const bool multi = m.seq_count() > 1;
     while (!multi) {   // one conversation: a request at a time
+        if (m.duo_lost()) {   // (a state call or hand-off failed: the supervisor starts a fresh pair, never serve alone)
+            std::fprintf(stderr, "ds4 duo: the prefix link failed; ending this coordinator so the pair can restart\n");
+            return 1;
+        }
         settle_start();   // (nothing in flight: this is the idle)
         const bool have_line = in.next(line);
         settle_stop();    // (a line arrived, or the input closed)
@@ -2527,9 +2531,15 @@ int main(int argc, char** argv) {
         } else if (a == "--max-context") o.max_context = std::atoll(val("--max-context").c_str());
         else if (a == "--reserve-mib") o.reserve_mib = std::atoll(val("--reserve-mib").c_str());
         else if (a == "--vram-experts") { o.vram_experts = std::atof(val("--vram-experts").c_str()); o.vram_experts_auto = false; }
-        else if (a == "--duo-listen") { o.duo_role = 1; o.duo_addr = val("--duo-listen"); }
+        else if (a == "--duo-listen") {
+            if (o.duo_role == 2) { std::fprintf(stderr, "duo: --duo-listen and --duo-connect cannot both be given\n"); return 2; }
+            o.duo_role = 1; o.duo_addr = val("--duo-listen");
+        }
         else if (a == "--duo-allow") o.duo_allow = val("--duo-allow");
-        else if (a == "--duo-connect") { o.duo_role = 2; o.duo_addr = val("--duo-connect"); }
+        else if (a == "--duo-connect") {
+            if (o.duo_role == 1) { std::fprintf(stderr, "duo: --duo-listen and --duo-connect cannot both be given\n"); return 2; }
+            o.duo_role = 2; o.duo_addr = val("--duo-connect");
+        }
         else if (a == "--duo-cut") o.duo_cut = std::atoi(val("--duo-cut").c_str());
         else if (a == "--duo-certs") o.duo_certs = val("--duo-certs");
         else if (a == "--duo-insecure") o.duo_insecure = true;
@@ -2621,6 +2631,13 @@ int main(int argc, char** argv) {
         return 2;
     }
     if (o.duo_role != 0) {   // Strata Duo: text, one conversation, no drafter (ds4_duo.hpp)
+#if !defined(__APPLE__) && !defined(_WIN32)
+        std::signal(SIGPIPE, SIG_IGN);   // (OpenSSL's socket BIO: Linux has no SO_NOSIGPIPE)
+#endif
+        if (o.duo_cut < 1) {
+            std::fprintf(stderr, "duo: --duo-cut must be at least 1 (and inside the model's layers)\n");
+            return 2;
+        }
         o.dspark = false, o.dspark_auto = false, o.seqs = 1, o.threads = false, o.tp = 1, o.vision = false;
         // a long prompt: in chunks of --prefill-chunk rows across the two hosts (both hosts the same number; not given:
         // DS4_DUO_CHUNK, else kDuoChunk), or --prefill-chunk 0: windows of 16 as Duo v0 read every prompt.
@@ -2631,7 +2648,7 @@ int main(int argc, char** argv) {
         if (o.prefill_chunk < 0) o.prefill_chunk = std::getenv("DS4_DUO_CHUNK") ? std::max(0, std::atoi(std::getenv("DS4_DUO_CHUNK"))) : kDuoChunk;
         if (o.prefill_chunk == 0) setenv("DS4_NO_CHUNKS", "1", 1);
         std::string why;   // (the link's security, before the load: TLS with --duo-certs, or an explicit --duo-insecure)
-        if (!strata::ds4::duo::link_preflight(o.duo_role, o.duo_certs, o.duo_insecure, why)) {
+        if (!strata::ds4::duo::link_preflight(o.duo_role, o.duo_certs, o.duo_insecure, o.duo_allow, why)) {
             std::fprintf(stderr, "maya-ds4: %s\n", why.c_str());
             return 2;
         }

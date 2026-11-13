@@ -189,6 +189,13 @@ if(STRATA_DUO_TLS)
   target_link_libraries(strata_ds4 PRIVATE ${DUO_SSL}/lib/libssl.a ${DUO_SSL}/lib/libcrypto.a)
   message(STATUS "Strata Duo: TLS link ON, static OpenSSL from ${DUO_SSL}")
 endif()
+# -DSTRATA_DUO_TESTHOOKS=ON: the prefix host reads DS4_DUO_SLOT_TEST (refuse or damage a conversation's half on purpose),
+# for duo/tests/slots_test.py's failure scenarios. OFF in every normal build: the variable is not read at all.
+option(STRATA_DUO_TESTHOOKS "Strata Duo: fault-injection hooks for the slot tests (never in a build that serves)" OFF)
+if(STRATA_DUO_TESTHOOKS)
+  target_compile_definitions(strata_ds4 PRIVATE STRATA_DUO_TESTHOOKS=1)
+  message(STATUS "Strata Duo: TEST HOOKS ON (not a build to serve with)")
+endif()
 # The commit the binary was built from, readable with --version (the root CMakeLists does the same for the CUDA and HIP builds):
 # -DSTRATA_BUILD_ID=..., else BUILD_ID beside the sources (a git archive has no .git), else git, else "unknown".
 if(NOT STRATA_BUILD_ID AND EXISTS ${STRATA_ROOT}/BUILD_ID)

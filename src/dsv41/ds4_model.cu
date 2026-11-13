@@ -1892,6 +1892,7 @@ struct Model::Impl {
     }
 
     ~Impl() {
+        if (o.duo_role == 2 && dl.open()) dl.send(duo::kBye);   // (Duo: the prefix host ends in order with this one)
         quit.store(true);
         if (warm_bg.joinable()) warm_bg.join();   // (the warm-up uses the BLAS handles destroyed below)
         warm_end();
@@ -7146,7 +7147,7 @@ struct Model::Impl {
     }
 
     void reset() {
-        if (o.duo_role == 2 && dl.open()) dl.send(duo::kReset);
+        duo_mirror(duo::kReset);
         pos = 0;
         toks.clear();
         ctoks.clear();
@@ -7171,7 +7172,7 @@ struct Model::Impl {
     // the state at pos into checkpoint `slot` (the window rings and the compressors' partial groups: the rest of the
     // state is indexed by position, and what lies past a restored position is written again)
     void checkpoint(int slot) {
-        if (o.duo_role == 2 && dl.open()) dl.send(duo::kCheckpoint, slot);
+        duo_mirror(duo::kCheckpoint, slot);
         snap_into(ck[slot & 1]);
     }
     void snap_into(Check& c) {
@@ -7211,7 +7212,7 @@ struct Model::Impl {
     // the state at pos as a restore point a request asked for (shared: the end of a shared start, given up last); one
     // at this position already is kept (it holds the same state), else the one mark_victim() picks makes room
     void mark(bool shared) {
-        if (o.duo_role == 2 && dl.open()) dl.send(duo::kMark, shared ? 1 : 0);
+        duo_mirror(duo::kMark, shared ? 1 : 0);
         if (Check* c = mark_room(pos, shared)) snap_into(*c);
     }
     // the restore point at position `at` to fill (nullptr: none kept, or one there already - in use again)
@@ -7252,7 +7253,7 @@ struct Model::Impl {
 
     // checkpoint 1 (the position before the last prompt's end) becomes the anchor too
     void pin() {
-        if (o.duo_role == 2 && dl.open()) dl.send(duo::kPin);
+        duo_mirror(duo::kPin);
         if (ck[1].pos > 0) ck[2] = ck[1];
     }
     // the checkpoints the state can go back to (what a slot of it keeps), latest first
@@ -7283,7 +7284,7 @@ struct Model::Impl {
     }
 
     bool restore(int64_t limit) {
-        if (o.duo_role == 2 && dl.open()) dl.send(duo::kRestore, limit);   // (the same checkpoints there: the same answer)
+        if (!duo_mirror(duo::kRestore, limit)) return false;   // (the same checkpoints there: the same answer)
         const int b = best_check(limit);
         if (b < 0) return false;
         const Check& c = check_at(b);
@@ -7538,6 +7539,11 @@ struct Model::Impl {
         std::vector<int32_t> toks_in((size_t) n);
         std::memcpy(toks_in.data(), data + off, (size_t) n * 4);
         off += (size_t) n * 4;
+        for (int32_t t : toks_in)   // (they index the Engram's map and the sampler's rows: before anything is written)
+            if (t < 0 || t >= g.vocab) {
+                err = "the slot's tokens are damaged";
+                return false;
+            }
         for (Dev& d : devs) {   // (their work ends before the state is written over)
             cudaSetDevice(d.id);
             cudaStreamSynchronize(d.st);
@@ -7751,11 +7757,12 @@ struct Model::Impl {
     static constexpr size_t kDuoSlotHead = 48;
     std::vector<uint8_t> duo_slot;   // the prefix host: its half on its way out or in
 
-    // the suffix host: its half, then the prefix host's over the link.  0 and err: nothing was set aside, and nothing
-    // changed on either host (the prefix host refused, or the link is gone - closed, then)
+    // the suffix host: its half, then the prefix host's over the link.  0 and err: nothing was set aside, and no
+    // layer's state changed on either host (the prefix host refused - it only no longer counts its state as set
+    // aside, slot_held - or the link is gone: closed, then)
     uint64_t duo_slot_save(std::vector<uint8_t>& out, std::string& err, int64_t at) {
         if (!dl.open()) {
-            err = "duo: the link to the prefix host is gone";
+            err = duo_gone("prefix");
             return 0;
         }
         const bool held = slot_held;
@@ -7774,9 +7781,11 @@ struct Model::Impl {
             return (uint64_t) 0;
         };
         duo::Head h;
-        if (!dl.send(duo::kSlotSave, at) || !dl.recv_head(h)) {
+        // (b: the position this half is of - the prefix host refuses when its own is another, e.g. after a restore()
+        //  that found a point on one host only)
+        if (!dl.send(duo::kSlotSave, at, at < 0 ? pos : at) || !dl.recv_head(h)) {
             dl.close();
-            return undo("duo: the link to the prefix host is gone");
+            return undo(duo_gone("prefix"));
         }
         if (h.op != duo::kSlot) {
             std::string msg(h.op == duo::kErr ? (size_t) std::min<uint64_t>(h.bytes, 4096) : 0, '\0');
@@ -7784,7 +7793,7 @@ struct Model::Impl {
                 dl.close();   // (out of step)
                 return undo("duo: the prefix host: an unexpected answer");
             }
-            return undo("duo: the prefix host: " + msg);
+            return undo("duo: the prefix host: " + duo::printable(msg));
         }
         if (h.bytes < 32 || h.bytes > slot_bytes(at, true) + (1u << 20)) {
             dl.close();
@@ -7794,7 +7803,7 @@ struct Model::Impl {
         out.resize(kDuoSlotHead + (size_t) mine + (size_t) theirs + 8);
         if (!dl.get(out.data() + kDuoSlotHead + (size_t) mine, (size_t) theirs)) {
             dl.close();
-            return undo("duo: the link to the prefix host is gone");
+            return undo(duo_gone("prefix"));
         }
         const uint64_t head[6] = {kDuoSlotMagic, (uint64_t) o.duo_cut, (uint64_t) g.nl, (uint64_t) (at < 0 ? pos : at), mine, theirs};
         std::memcpy(out.data(), head, sizeof head);
@@ -7841,7 +7850,7 @@ struct Model::Impl {
         const uint8_t* theirs = mine + head[4];
         if (!slot_load(mine, (size_t) head[4], n_pos, err, true)) return false;   // (this host's half's head: before anything is sent)
         if (!dl.open()) {
-            err = "duo: the link to the prefix host is gone";
+            err = duo_gone("prefix");
             return false;
         }
         const double t0 = now_ms();
@@ -7849,7 +7858,7 @@ struct Model::Impl {
         if (!dl.send(duo::kSlotLoad, n_pos, 0, theirs, (size_t) head[5]) || !dl.recv_head(h)) {
             dl.close();   // (what the prefix host holds now is not known: no call reaches it again)
             reset();
-            err = "duo: the link to the prefix host is gone";
+            err = duo_gone("prefix");
             return false;
         }
         if (h.op != duo::kOk) {
@@ -7861,7 +7870,7 @@ struct Model::Impl {
                 return false;
             }
             if (h.a != 0) reset();   // (it wrote some of the half and reset itself: this host too - the prompt is read from token 0)
-            err = "duo: the prefix host: " + msg;
+            err = "duo: the prefix host: " + duo::printable(msg);
             return false;
         }
         const double t1 = now_ms();
@@ -7874,17 +7883,24 @@ struct Model::Impl {
         return true;
     }
     // (tests, the prefix host: DS4_DUO_SLOT_TEST=1 refuses to give its half, 2 refuses to take one, 3 takes one whose
-    // end is damaged - it fails after its layers were written, so the host resets)
+    // end is damaged - it fails after its layers were written, so the host resets.  Only in a build with
+    // -DSTRATA_DUO_TESTHOOKS=ON: a normal build does not read the variable)
     static int duo_slot_test() {
+#if defined(STRATA_DUO_TESTHOOKS)
         const char* v = std::getenv("DS4_DUO_SLOT_TEST");
         return v != nullptr ? std::atoi(v) : 0;
+#else
+        return 0;
+#endif
     }
     // the prefix host's side of the two: false - the link is gone
     bool duo_serve_slot_save(const duo::Head& h) {
         std::string e;
         slot_held = false;   // (whether the conversation is already set aside is the suffix host's to say)
         const int test = duo_slot_test();
-        const uint64_t n = test == 1 ? 0 : slot_save(duo_slot, e, h.a);
+        const bool apart = h.b != (h.a < 0 ? pos : h.a);   // (the suffix host's half is of another position)
+        const uint64_t n = test == 1 || apart ? 0 : slot_save(duo_slot, e, h.a);
+        if (apart) e = "the two hosts are at different positions (here " + std::to_string(pos) + ", there " + std::to_string(h.b) + ")";
         if (test == 1) e = "DS4_DUO_SLOT_TEST=1: the half is refused";
         const bool sent = n == 0 ? dl.send(duo::kErr, 0, 0, e.data(), e.size()) : dl.send(duo::kSlot, h.a, 0, duo_slot.data(), (size_t) n);
         std::vector<uint8_t>().swap(duo_slot);
@@ -13221,6 +13237,10 @@ struct Model::Impl {
                 err = "duo: a run in chunks of " + std::to_string(dp->per) + " rows, this host's chunk is " + std::to_string(chunk);
                 return false;
             }
+            if (dp->yoco < -1 || dp->yoco >= g.nl) {
+                err = "duo: a run whose skip starts at layer " + std::to_string(dp->yoco) + " of " + std::to_string(g.nl);
+                return false;
+            }
             per = dp->per, yl = dp->yoco, a = yl > 0 ? dp->skip : 0;
         }
         if (o.duo_role == 2) {   // Duo: the prefix host runs the same chunks on its layers, each one's hand-off comes back (duo_take_chunk)
@@ -13235,7 +13255,8 @@ struct Model::Impl {
             }
             std::memcpy(msg.data() + sizeof pl + (size_t) pl.n_inner * 16, tk, (size_t) n * 4);
             if (!dl.send(duo::kChunks, pos, n, msg.data(), msg.size())) {
-                err = "duo: the link to the prefix host is gone";
+                err = duo_gone("prefix");
+                dl.close();
                 return false;
             }
             duo_run_sent = true;
@@ -13692,12 +13713,23 @@ struct Model::Impl {
                 return false;
             }
         const int64_t p0 = pos;
+        // (Duo's suffix host, a window the prefix host was told of that fails here: the two are no longer at the same
+        //  position - the link ends, as after a run of chunks that failed)
+        struct DuoWindow {
+            Impl& p;
+            bool sent = false, done = false;
+            ~DuoWindow() {
+                if (sent && !done) p.dl.close();
+            }
+        } duo_win{*this};
         if (o.duo_role == 2) {   // Duo: the prefix host runs the same window on its layers; its hand-off comes back in forward_serial
             duo_tk.assign(tk, tk + T);
             if (!dl.send(duo::kForward, p0, T, duo_tk.data(), (size_t) T * 4)) {
-                err = "duo: the link to the prefix host is gone";
+                err = duo_gone("prefix");
+                dl.close();
                 return false;
             }
+            duo_win.sent = true;
         }
         slot_held = false;   // (the state grows now: what slot_save took is no longer the conversation)
         for (int t = 0; t < T; ++t) {
@@ -13740,12 +13772,25 @@ struct Model::Impl {
         pos += T;
         st.tokens += T;
         cache_tick(T);
+        duo_win.done = true;
         if (seed_rows != 0 && !seed_drafter(p0, seed_rows < 0 ? T : seed_rows, 0, err)) return false;
         return true;
     }
 
     // ---- Strata Duo (ds4_duo.hpp) ----
     duo::Link dl;
+    // the error of a call that found the link dead, with what the link knows of it (closed, a silent host, ...)
+    std::string duo_gone(const char* host) const { return std::string("duo: the link to the ") + host + " host is gone (" + dl.why() + ")"; }
+    // the suffix host: a state call repeated to the prefix host (none is answered).  One that cannot be sent ends the
+    // link - false: this host does not go on alone, its next window, run or slot call fails (duo_gone) and the
+    // server ends the engine (Model::duo_lost)
+    bool duo_mirror(uint32_t op, int64_t a = 0) {
+        if (o.duo_role != 2 || !dl.open()) return true;
+        if (dl.send(op, a)) return true;
+        std::fprintf(stderr, "ds4 %s: closed\n", duo_gone("prefix").c_str());
+        dl.close();
+        return false;
+    }
     std::vector<int32_t> duo_tk;
     std::vector<uint8_t> duo_buf;   // a window's hand-off: h | pre | topk | cand, as hand_xfer lays it out
     double duo_wait_ms = 0.0, duo_io_ms = 0.0;
@@ -13755,19 +13800,35 @@ struct Model::Impl {
         n[3] = (size_t) T * cand_stride() * 4;
         return n[0] + n[1] + n[2] + n[3];
     }
-    // what both hosts must agree on: the engine, the model's geometry and files (by size), the cut and the context
+    // the model files' content fingerprints (duo::file_print: 1 MiB read of each), taken once after the load
+    std::vector<uint64_t> duo_prints;
+    bool duo_fingerprint(std::string& err) {
+        const double t0 = now_ms();
+        duo_prints.assign(pk.files.size(), 0);
+        for (size_t i = 0; i < pk.files.size(); ++i)
+            if (!duo::file_print((int) pk.fds[i], os::file_size(pk.fds[i]), duo_prints[i])) {
+                err = "duo: " + pk.files[i] + ": unreadable (its fingerprint for the other host)";
+                return false;
+            }
+        std::fprintf(stderr, "ds4 duo: %zu model files fingerprinted in %.0f ms\n", pk.files.size(), now_ms() - t0);
+        return true;
+    }
+    // what both hosts must agree on: the engine, the model's geometry and files (by name, size and content
+    // fingerprint), the cut and the context.  (ds4.txt and tensors.txt are not in it: they name each host's own paths)
     std::string duo_identity() const {
         std::ostringstream id;
-        id << "strata-ds4-duo-2 engine=" << STRATA_VERSION << " nl=" << g.nl << " dim=" << g.dim << " hd=" << g.hd << " hc=" << g.hc
+        id << "strata-ds4-duo-3 engine=" << STRATA_VERSION << " nl=" << g.nl << " dim=" << g.dim << " hd=" << g.hd << " hc=" << g.hc
            << " win=" << g.win << " topk=" << topk_stride() << " cand=" << cand_stride() << " ratios=";
         for (int r : g.ratios) id << r << ",";
         id << " kv=";
         for (int v : g.kv_src) id << v << ",";
         id << " ix=";
         for (int v : g.ix_src) id << v << ",";
-        for (size_t i = 0; i < pk.files.size(); ++i) {   // (by name and size: each host keeps the files where it likes)
+        for (size_t i = 0; i < pk.files.size(); ++i) {   // (by name, not by path: each host keeps the files where it likes)
             const size_t sl = pk.files[i].find_last_of("/\\");
-            id << " " << (sl == std::string::npos ? pk.files[i] : pk.files[i].substr(sl + 1)) << ":" << os::file_size(pk.fds[i]);
+            char fp[24];
+            std::snprintf(fp, sizeof fp, "%016llx", (unsigned long long) (i < duo_prints.size() ? duo_prints[i] : 0));
+            id << " " << (sl == std::string::npos ? pk.files[i] : pk.files[i].substr(sl + 1)) << ":" << os::file_size(pk.fds[i]) << ":" << fp;
         }
         id << " cut=" << o.duo_cut << " ctx=" << o.max_context << " chunk=" << chunk;   // (chunk: a run's hand-offs fit both)
         id << " points=" << marks_cap();   // (the restore points a conversation keeps: both hosts give up the same ones)
@@ -13801,18 +13862,30 @@ struct Model::Impl {
         if (o.duo_role == 0) return true;
         if (!duo_check(err)) return false;
         duo_buf.resize(duo_sizes(kWin, std::array<size_t, 4>().data()));
+        if (!duo_fingerprint(err)) return false;
         if (o.duo_role != 2) return true;
         if (!dl.connect_to(o.duo_addr, o.duo_certs, o.duo_insecure, err)) return false;
         const std::string id = duo_identity();
         duo::Head h;
+        dl.deadline(duo::kHandshakeSeconds);   // (the greeting and its answer)
         if (!dl.send(duo::kHello, 0, 0, id.data(), id.size()) || !dl.recv_head(h)) {
-            err = "duo: no answer from the prefix host";
+            err = "duo: no answer from the prefix host to the greeting (" + dl.why() + ")";
+            dl.close();
+            return false;
+        }
+        // (kOk, or kErr with why: a refusal names both identities - 256 KiB is room for that and nothing to allocate blindly)
+        if ((h.op != duo::kOk && h.op != duo::kErr) || h.bytes > (1u << 18) || (h.op == duo::kOk && h.bytes != 0)) {
+            err = "duo: the prefix host's answer to the greeting is not one (call " + std::to_string(h.op) + ", " +
+                  std::to_string(h.bytes) + " bytes)";
+            dl.close();
             return false;
         }
         std::string msg((size_t) h.bytes, '\0');
-        if (h.bytes > 0 && !dl.get(&msg[0], msg.size())) msg = "the link closed";
+        if (h.bytes > 0 && !dl.get(&msg[0], msg.size())) msg = "the link closed (" + dl.why() + ")";
+        dl.deadline(0);
         if (h.op != duo::kOk) {
-            err = "duo: the prefix host refused: " + msg;
+            err = "duo: the prefix host refused: " + duo::printable(msg, 16384);
+            dl.close();
             return false;
         }
         std::fprintf(stderr, "ds4 duo: suffix host, layers [%d, %d) + head; prefix host %s holds [0, %d)\n", o.duo_cut, g.nl,
@@ -13832,7 +13905,7 @@ struct Model::Impl {
         CK(cudaStreamSynchronize(d.st));
         const double t0 = now_ms();
         if (!dl.send(duo::kHand, T, 0, bb, all)) {
-            err = "duo: the link to the suffix host is gone";
+            err = duo_gone("suffix");
             return false;
         }
         duo_io_ms += now_ms() - t0;
@@ -13846,19 +13919,21 @@ struct Model::Impl {
         duo::Head h;
         const double t0 = now_ms();
         if (!dl.recv_head(h)) {
-            err = "duo: the link to the prefix host is gone";
+            err = duo_gone("prefix");
+            dl.close();
             return false;
         }
         if (h.op != duo::kHand || h.a != T || h.bytes != all) {
             std::string msg(h.op == duo::kErr ? (size_t) std::min<uint64_t>(h.bytes, 4096) : 0, '\0');
-            if (!msg.empty()) dl.get(&msg[0], msg.size());
-            err = "duo: the prefix host: " + (msg.empty() ? std::string("an unexpected answer") : msg);
+            if (!msg.empty() && !dl.get(&msg[0], msg.size())) msg.clear();
+            err = "duo: the prefix host: " + (msg.empty() ? std::string("an unexpected answer") : duo::printable(msg));
             dl.close();
             return false;
         }
         uint8_t* bb = duo_buf.data();
         if (!dl.get(bb, all)) {
-            err = "duo: the link to the prefix host is gone";
+            err = duo_gone("prefix");
+            dl.close();
             return false;
         }
         duo_wait_ms += now_ms() - t0;
@@ -13888,7 +13963,7 @@ struct Model::Impl {
         CK(cudaStreamSynchronize(d.st));
         const double t0 = now_ms();
         if (!dl.send(duo::kHand, T, k, duo_hand[0].data(), all)) {
-            err = "duo: the link to the suffix host is gone";
+            err = duo_gone("suffix");
             return false;
         }
         duo_cio_ms += now_ms() - t0;
@@ -13907,18 +13982,20 @@ struct Model::Impl {
         duo::Head h;
         const double t0 = now_ms();
         if (!dl.recv_head(h)) {
-            err = "duo: the link to the prefix host is gone";
+            err = duo_gone("prefix");
+            dl.close();
             return false;
         }
         if (h.op != duo::kHand || h.a != T || h.b != k || h.bytes != all) {
             std::string msg(h.op == duo::kErr ? (size_t) std::min<uint64_t>(h.bytes, 4096) : 0, '\0');
-            if (!msg.empty()) dl.get(&msg[0], msg.size());
-            err = "duo: the prefix host: " + (msg.empty() ? "an unexpected answer for chunk " + std::to_string(k) : msg);
+            if (!msg.empty() && !dl.get(&msg[0], msg.size())) msg.clear();
+            err = "duo: the prefix host: " + (msg.empty() ? "an unexpected answer for chunk " + std::to_string(k) : duo::printable(msg));
             dl.close();
             return false;
         }
         if (!dl.get(duo_hand[slot].data(), all)) {
-            err = "duo: the link to the prefix host is gone";
+            err = duo_gone("prefix");
+            dl.close();
             return false;
         }
         duo_cwait_ms += now_ms() - t0;
@@ -13934,7 +14011,11 @@ struct Model::Impl {
     bool duo_serve_chunks(const duo::Head& h, std::string& err) {
         const int64_t n = h.b;
         duo::ChunksPlan pl;
-        if (n < 1 || n > o.max_context || h.bytes < sizeof pl || h.a != pos) {
+        if (chunk <= 0) {   // (--prefill-chunk 0 here: no chunk buffers, and nothing to divide a run by)
+            err = "duo: a run in chunks, and this host runs none (--prefill-chunk 0)";
+            return false;
+        }
+        if (n < 1 || n > o.max_context || n > (1 << 30) || h.bytes < sizeof pl || h.a != pos) {
             err = "duo: a run at " + std::to_string(h.a) + " of " + std::to_string(n) + " tokens, this host is at " + std::to_string(pos);
             return false;
         }
@@ -13946,11 +14027,20 @@ struct Model::Impl {
             err = "duo: a run's call of the wrong size";
             return false;
         }
+        if (pl.after < 0 || pl.after > o.max_context || (int64_t) pl.after + n > INT32_MAX) {   // (it is added to the run's length)
+            err = "duo: a run followed by " + std::to_string(pl.after) + " tokens";
+            return false;
+        }
         std::vector<std::pair<int64_t, bool>> inner;
         for (int j = 0; j < pl.n_inner; ++j) {
             int64_t pr[2];
             if (!dl.get(pr, 16)) {
                 err = "duo: the link closed in a run's call";
+                return false;
+            }
+            // (as Model::feed_marks asks of them on the suffix host: inside the run, in order)
+            if (pr[0] <= pos || pr[0] >= pos + n - 1 || (j > 0 && pr[0] <= inner.back().first)) {
+                err = "duo: a run's restore point that is not inside the run, or out of order";
                 return false;
             }
             inner.push_back({pr[0], pr[1] != 0});
@@ -13972,40 +14062,70 @@ struct Model::Impl {
         }
         std::fprintf(stderr, "ds4 duo: prefix host, layers [0, %d); waiting on %s for %s\n", o.duo_cut, o.duo_addr.c_str(),
                      o.duo_allow.empty() ? "any peer" : o.duo_allow.c_str());
-        if (!dl.accept_one(o.duo_addr, o.duo_allow, o.duo_certs, o.duo_insecure, err)) return false;
-        duo::Head h;
-        if (!dl.recv_head(h) || h.op != duo::kHello || h.bytes > 65536) {
-            err = "duo: not a suffix host's greeting";
-            return false;
-        }
-        std::string theirs((size_t) h.bytes, '\0');
-        if (!dl.get(&theirs[0], theirs.size())) {
-            err = "duo: the link closed in the greeting";
-            return false;
-        }
         const std::string mine = duo_identity();
-        if (theirs != mine) {
-            const std::string msg = "the two hosts differ: here " + mine + " there " + theirs;
-            dl.send(duo::kErr, 0, 0, msg.data(), msg.size());
-            err = "duo: " + msg;
-            return false;
+        duo::Head h;
+        // the first peer whose greeting is a suffix host's: a connection that sends anything else, or nothing within
+        // the greeting's deadline, is dropped and the wait goes on (as for a peer the TLS checks refuse)
+        for (;;) {
+            if (!dl.accept_one(o.duo_addr, o.duo_allow, o.duo_certs, o.duo_insecure, err, true)) return false;
+            dl.deadline(duo::kHandshakeSeconds);
+            std::string theirs, why;
+            if (!dl.recv_head(h)) why = dl.why();
+            else if (h.op != duo::kHello || h.bytes < 1 || h.bytes > 65536) why = "its first call is not a greeting";
+            else {
+                theirs.resize((size_t) h.bytes);
+                if (!dl.get(&theirs[0], theirs.size())) why = dl.why();
+            }
+            if (!why.empty()) {
+                std::fprintf(stderr, "ds4 duo: dropped a connection from %s: not a suffix host's greeting (%s)\n", dl.peer().c_str(), why.c_str());
+                dl.refuse();
+                continue;
+            }
+            if (theirs != mine) {   // (not this model and these settings: the coordinator fails, the worker waits for another peer)
+                const std::string msg = "the two hosts differ: here " + mine + " there " + duo::printable(theirs, 8192);
+                dl.send(duo::kErr, 0, 0, msg.data(), msg.size());
+                std::fprintf(stderr, "ds4 duo: refused a greeting from %s: %s\n", dl.peer().c_str(), duo::printable(msg, 16384).c_str());
+                dl.refuse();
+                continue;
+            }
+            if (!dl.send(duo::kOk)) {
+                std::fprintf(stderr, "ds4 duo: dropped a connection from %s: it left in the greeting (%s)\n", dl.peer().c_str(), dl.why().c_str());
+                dl.refuse();
+                continue;
+            }
+            dl.deadline(0);
+            dl.stop_listening();
+            break;
         }
-        if (!dl.send(duo::kOk)) return false;
         std::fprintf(stderr, "ds4 duo: the suffix host is connected\n");
         std::vector<int> tk;
         for (;;) {
-            if (!dl.recv_head(h)) return true;   // (the suffix host left)
+            if (!dl.recv_head(h)) {
+                // (a bad header: the stream is out of step, not closed; a link that closed without kBye: the suffix
+                //  host ended, was stopped, or its host is gone - either way this host's state has no owner now)
+                if (dl.bad_head()) err = "duo: the suffix host sent " + dl.why() + ": the link is out of step";
+                else err = duo_gone("suffix") + (dl.peer_left() ? ": it ended without its goodbye" : "");
+                return false;
+            }
+            if (h.bytes != 0 && h.op != duo::kForward && h.op != duo::kChunks && h.op != duo::kSlotLoad) {
+                err = "duo: call " + std::to_string(h.op) + " with " + std::to_string(h.bytes) + " bytes it does not take: the link is out of step";
+                dl.send(duo::kErr, 0, 0, err.data(), err.size());
+                return false;
+            }
             switch (h.op) {
             case duo::kForward: {
-                const int T = (int) h.b;
-                if (T < 1 || T > kWin || h.bytes != (uint64_t) T * 4 || h.a != pos) {
-                    err = "duo: a window at " + std::to_string(h.a) + " of " + std::to_string(T) + " tokens, this host is at " +
+                if (h.b < 1 || h.b > kWin || h.bytes != (uint64_t) h.b * 4 || h.a != pos) {
+                    err = "duo: a window at " + std::to_string(h.a) + " of " + std::to_string(h.b) + " tokens, this host is at " +
                           std::to_string(pos);
                     dl.send(duo::kErr, 0, 0, err.data(), err.size());
                     return false;
                 }
+                const int T = (int) h.b;
                 tk.resize((size_t) T);
-                if (!dl.get(tk.data(), (size_t) T * 4)) return true;
+                if (!dl.get(tk.data(), (size_t) T * 4)) {
+                    err = duo_gone("suffix");
+                    return false;
+                }
                 if (!forward(tk.data(), T, 0, err)) {
                     dl.send(duo::kErr, 0, 0, err.data(), err.size());
                     return false;
@@ -14024,14 +14144,23 @@ struct Model::Impl {
             case duo::kPin: pin(); break;
             case duo::kRestore: restore(h.a); break;
             case duo::kSlotSave:
-                if (!duo_serve_slot_save(h)) return true;
+                if (!duo_serve_slot_save(h)) {
+                    err = duo_gone("suffix");
+                    return false;
+                }
                 break;
             case duo::kSlotLoad:
-                if (!duo_serve_slot_load(h)) return true;
+                if (!duo_serve_slot_load(h)) {
+                    err = duo_gone("suffix");
+                    return false;
+                }
                 break;
-            case duo::kBye: return true;
+            case duo::kBye:
+                std::fprintf(stderr, "ds4 duo: the suffix host said goodbye\n");
+                return true;
             default:
                 err = "duo: an unknown call " + std::to_string(h.op);
+                dl.send(duo::kErr, 0, 0, err.data(), err.size());
                 return false;
             }
         }
@@ -15480,6 +15609,7 @@ Model::Model() : p_(new Impl) {}
 Model::~Model() = default;
 bool Model::load(const Options& o, std::string& err) { return p_->load(o, err) && p_->duo_open(err); }
 bool Model::duo_serve(std::string& err) { return p_->duo_serve(err); }
+bool Model::duo_lost() const { return p_->o.duo_role == 2 && !p_->dl.open(); }
 std::string Model::duo_report() const {
     const Impl& p = *p_;
     if (p.o.duo_role == 0 || (p.duo_windows == 0 && p.duo_chunks == 0)) return "";
