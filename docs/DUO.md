@@ -80,8 +80,15 @@ suffix host runs its 20 layers, the output head and the sampler, and gives the t
 is not sent token by token: it goes through in chunks of 2048 tokens, so both Macs work on it at the same time.
 
 Both engines are the same program with the same model pack. When they connect they compare an identity string
-(engine version, model geometry, the model files' names and sizes, the cut, the context size, the chunk size) and
-refuse to pair if it differs.
+(engine version, model geometry, the model files' names, sizes and a content fingerprint, the cut, the context size,
+the chunk size) and refuse to pair if it differs. The fingerprint reads about 1 MiB of each file (the header, the
+tail and blocks spread between), takes well under a second, and catches two different models whose files happen to
+have the same names and sizes.
+
+Each end watches the connection with TCP keepalive: a Mac that loses power or its cable is noticed after about 30
+seconds and the engine on the other Mac ends with a message, so that the gate can start a fresh pair. There is no
+timeout on the work itself (a long prompt can keep one side waiting for many seconds), only on a peer that stops
+answering at the network level.
 
 Conversations that the server sets aside (so that returning to them does not re-read the prompt) hold both hosts'
 halves in one file on the suffix host. A restarted prefix host has lost nothing.
@@ -416,8 +423,8 @@ engine listens only on the link's address, accepts connections only from the oth
 
 **What it does not do.** It does not protect against someone who has a role key or the CA key, or who controls one
 of the two Macs. There is no revocation: if a key may have leaked, make a new set with `gen_certs.sh` and replace
-the files on both Macs. The two engines trust each other once authenticated; the link protocol has not been hardened
-against a peer that holds a valid certificate and misbehaves. Certificates expire (365 days by default; `doctor`
+the files on both Macs. The two engines trust each other once authenticated: sizes and indices in what a peer sends
+are checked, but a peer that holds a valid certificate can still send wrong activations. Certificates expire (365 days by default; `doctor`
 warns 30 days before), and the pair then stops connecting until you make a new set.
 
 **Key handling.**
@@ -425,7 +432,8 @@ warns 30 days before), and the pair then stops connecting until you make a new s
 - The worker key (`strata-stage-worker.key`) must never leave the prefix host; the coordinator key must never leave
   the suffix host. `doctor` warns when it finds a key on the wrong host.
 - Keep the CA key offline, or delete it. Neither host needs it. With it, new certificates for your pair can be made.
-- Key files are mode 600 in a mode 700 directory. `certs/`, `certs-new/`, `run/` and `duo.conf` are in `.gitignore`.
+- Key files are mode 600 in a mode 700 directory. The engine refuses to start with a key file that group or others
+  can read, and names the `chmod 600` to run. `certs/`, `certs-new/`, `run/` and `duo.conf` are in `.gitignore`.
 - `gen_certs.sh` creates all keys on one Mac and you copy one role's folder to the other over ssh. If you prefer
   that a key never crosses, run `gen_certs.sh` on a third machine and copy each folder to its host.
 
@@ -441,7 +449,19 @@ unencrypted. Treat the logs in `duo/run/` as private too (paths, addresses, timi
 
 **`--duo-insecure`.** The engine refuses to open the link without `--duo-certs`, unless `--duo-insecure` is given.
 That flag selects a plain TCP connection: token ids and activations unencrypted, the peer known by its source
-address only. It exists for loopback tests on one machine. `duo.sh` never uses it. Do not use it between machines.
+address only (so the prefix host requires `--duo-allow` with it). It exists for loopback tests on one machine.
+`duo.sh` never uses it. Do not use it between machines.
+
+**Security review.** Before this branch was published the Duo additions (the link, the engine's handling of
+everything read from the link, the gate and the scripts) were reviewed once, by a second AI coding assistant reading
+the code as a stranger's, and the findings were fixed: bounds on every size and index taken from the link or from a
+kept conversation, a real deadline on the handshake and on connecting, detection of a peer that has vanished, a
+content fingerprint in the pairing identity, checks on every state call the suffix host repeats to the prefix host,
+refusal of private keys that other users can read, authentication before the gate reads a request body, and the API
+key kept out of every process's arguments. This was one review, not an independent audit. What remains by design:
+the two hosts trust each other once mutually authenticated; there is no certificate revocation; the API key is a
+shared bearer secret; the fingerprint detects mismatched files, it is not a cryptographic proof of integrity; this
+is experimental software.
 
 ## Troubleshooting
 

@@ -2,6 +2,7 @@
 # Build the Strata Duo engine (strata_ds4 with the TLS link) from a fresh checkout. No Homebrew, no sudo.
 #
 #   duo/build.sh [OUT_DIR]          TLS build into OUT_DIR (default: build-duo in the checkout)
+#   duo/build.sh --testhooks OUT_DIR  the TLS build with the slot tests' fault injection compiled in (tests only)
 #   duo/build.sh --plain [OUT_DIR]  upstream's default build (no TLS: --duo-certs is refused; default OUT_DIR build-duo-plain)
 #   duo/build.sh --deps-only        fetch and build the dependencies, then stop
 #
@@ -37,11 +38,12 @@ OPENSSL_SHA=603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb859a   #
 CMAKE_PIN=4.4.3
 NINJA_PIN=1.13.2
 
-TLS=1; DEPS_ONLY=0; OUT=""
+TLS=1; DEPS_ONLY=0; HOOKS=0; OUT=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --plain) TLS=0 ;;
     --deps-only) DEPS_ONLY=1 ;;
+    --testhooks) HOOKS=1 ;;   # (fault injection for duo/tests/slots_test.py: never a build to serve with)
     -h|--help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*) echo "build.sh: unknown option $1" >&2; exit 2 ;;
     *) [ -z "$OUT" ] || { echo "build.sh: one output directory only" >&2; exit 2; }; OUT=$1 ;;
@@ -137,6 +139,7 @@ mkdir -p "$OUT"
 ARGS=(-S "$ROOT/metal" -B "$OUT" -G Ninja -DCMAKE_BUILD_TYPE=Release "-DCMAKE_MAKE_PROGRAM=$NINJA"
       "-DMETAL_CPP_DIR=$TP/metal-cpp" "-DSTRATA_GGML_DIR=$TP/llama.cpp")
 if [ "$TLS" = 1 ]; then ARGS+=(-DSTRATA_DUO_TLS=ON "-DSTRATA_DUO_OPENSSL_ROOT=$SSL"); else ARGS+=(-DSTRATA_DUO_TLS=OFF); fi
+if [ "$HOOKS" = 1 ]; then ARGS+=(-DSTRATA_DUO_TESTHOOKS=ON); else ARGS+=(-DSTRATA_DUO_TESTHOOKS=OFF); fi
 say "configuring $OUT"
 "$CMAKE" "${ARGS[@]}" > "$OUT/duo-cmake.log" 2>&1 || { tail -25 "$OUT/duo-cmake.log"; die "cmake failed (full log: $OUT/duo-cmake.log)"; }
 grep -E "Strata Duo" "$OUT/duo-cmake.log" || echo "-- Strata Duo: TLS link OFF (plain build)"

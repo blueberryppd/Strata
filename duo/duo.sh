@@ -420,8 +420,8 @@ if [ "$certs_ok" = 1 ]; then
   # the engine's own verdict on this directory in this role: its checks before any model load (no --pack is given,
   # so it stops at its usage text right after them)
   if [ -x "$H_EXE" ]; then
-    if [ "$H_ROLE" = prefix ]; then pre=$("$H_EXE" --duo-listen 127.0.0.1:9 --duo-allow 127.0.0.1 --duo-certs "$H_CERTS" 2>&1 | grep -E "ds4 duo:|maya-ds4: duo:" | head -1)
-    else pre=$("$H_EXE" --duo-connect 127.0.0.1:9 --duo-certs "$H_CERTS" 2>&1 | grep -E "ds4 duo:|maya-ds4: duo:" | head -1); fi
+    if [ "$H_ROLE" = prefix ]; then pre=$("$H_EXE" --duo-cut "$H_CUT" --duo-listen 127.0.0.1:9 --duo-allow 127.0.0.1 --duo-certs "$H_CERTS" 2>&1 | grep -E "ds4 duo:|maya-ds4: duo:" | head -1)
+    else pre=$("$H_EXE" --duo-cut "$H_CUT" --duo-connect 127.0.0.1:9 --duo-certs "$H_CERTS" 2>&1 | grep -E "ds4 duo:|maya-ds4: duo:" | head -1); fi
     case "$pre" in
       *"link mode TLS 1.3"*) p "engine accepts the certificates" "TLS 1.3, mutual authentication, this host is $role" ;;
       *"needs an engine built with TLS"*) f "engine accepts the certificates" "this strata_ds4 was built without the TLS link" "build it with duo/build.sh (not a plain cmake build)" ;;

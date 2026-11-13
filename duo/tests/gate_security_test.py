@@ -19,9 +19,12 @@ HERE = Path(__file__).resolve().parent
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--out', type=Path, required=True)
+    ap.add_argument('--out', type=Path, default=None, help='work folder (default: a temporary one, removed afterwards)')
     ap.add_argument('--port', type=int, default=8198)
     a = ap.parse_args()
+    made = a.out is None
+    if made:
+        a.out = Path(tempfile.mkdtemp(prefix='duo-gate-security.'))
     a.out.mkdir(parents=True, exist_ok=True)
     run = a.out / 'run'
     run.mkdir(exist_ok=True)
@@ -133,6 +136,8 @@ if sys.argv[1]=='down':
     g.backend_ok = probe
     check('two failed probes followed by success do not reload', g.ensure_loaded() == '' and len(calls) == 3 and not g.loading)
     print('RESULT: ' + ('all security checks passed' if not failures else '%d failed: %s' % (len(failures), failures)))
+    if made:
+        shutil.rmtree(a.out, ignore_errors=True)
     return bool(failures)
 
 
