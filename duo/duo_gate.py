@@ -18,7 +18,7 @@ usage: duo_gate.py [--listen 8080] [--backend 8081] [--idle-min 30] [--run-dir D
                    [--engine-role prefix|suffix] [--link-port 50090] [--busy-max-s 2400]
 Defaults: --run-dir is run/ beside this file, --duo-sh is duo.sh beside this file.
 """
-import argparse, hmac, http.client, json, os, socket, subprocess, sys, threading, time
+import argparse, hmac, http.client, json, os, signal, socket, subprocess, sys, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -31,6 +31,10 @@ cond = threading.Condition(lock)
 active = 0                 # requests in flight (through or waiting)
 last_done = time.time()    # when the last request ended
 loading = False            # duo.sh up is running
+unloading = False          # down is running: arrivals wait, then load again
+forwarding = 0             # requests actually using the backend (not ones waiting for a load)
+probe_lock = threading.Lock()
+probe_at, probe_value = 0.0, False
 load_error = ""            # why the last start failed (shown to the requests that waited for it)
 args = None
 
@@ -61,7 +65,7 @@ def engine_running():
     return pgrep(r"%s .*%s [0-9.]*:%d( |$)" % (args.engine_name, flag, args.link_port))
 
 
-def backend_ok(timeout=3.0):
+def probe_backend(timeout=3.0):
     """The pair is loaded: this Mac's engine runs, and the server behind the gate says the model is there."""
     if not engine_running():
         return False
@@ -69,11 +73,28 @@ def backend_ok(timeout=3.0):
         c = http.client.HTTPConnection("127.0.0.1", args.backend, timeout=timeout)
         c.request("GET", "/v1/models", headers={"Authorization": "Bearer " + key()})
         r = c.getresponse()
-        body = r.read()
+        body = r.read(65536)
         c.close()
         return r.status == 200 and b'"id"' in body
     except (OSError, http.client.HTTPException):
         return False
+
+
+def backend_ok(timeout=3.0, fresh=False):
+    """Cache status probes for 2 s; neither the request/state lock nor a waiting unload is held here."""
+    global probe_at, probe_value
+    with probe_lock:
+        if fresh or time.monotonic() - probe_at >= 2:
+            probe_value = probe_backend(timeout)
+            probe_at = time.monotonic()
+        return probe_value
+
+
+def probe_watch():
+    """Refresh the liveness snapshot off the HTTP threads; a slow probe never stalls status."""
+    while True:
+        backend_ok()
+        time.sleep(2)
 
 
 def write_state(state):
@@ -84,12 +105,20 @@ def write_state(state):
 
 
 def run_duo(verb):
+    timeout = args.up_timeout if verb == "up" else args.down_timeout
     try:
-        r = subprocess.run([str(args.duo_sh), verb], capture_output=True, text=True, stdin=subprocess.DEVNULL)
+        p = subprocess.Popen([str(args.duo_sh), verb], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                             text=True, stdin=subprocess.DEVNULL, start_new_session=True)
+        try:
+            out, _ = p.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            # Only this subprocess group, never the gate or somebody else's pair.
+            os.killpg(p.pid, signal.SIGKILL)
+            p.communicate()
+            return 124, "duo.sh %s timed out after %g s" % (verb, timeout)
     except OSError as e:
         return 127, "cannot run %s: %s" % (args.duo_sh, e)
-    tail = "\n".join((r.stdout + r.stderr).strip().splitlines()[-6:])
-    return r.returncode, tail
+    return p.returncode, "\n".join(out.strip().splitlines()[-6:])
 
 
 def busy():
@@ -108,12 +137,32 @@ def busy():
 def ensure_loaded():
     """Called by a request: returns "" once the pair answers, or the reason it could not be started."""
     global loading, load_error
-    if backend_ok():
-        return ""
     with cond:
-        if not loading:
-            loading, load_error = True, ""
-            threading.Thread(target=loader, daemon=True).start()
+        while unloading:
+            cond.wait(timeout=5)
+        if loading:
+            while loading:
+                cond.wait(timeout=5)
+            return load_error
+        # Never reload underneath a request already using the pair, even when a health probe times out.
+        if forwarding:
+            return ""
+        loading, load_error = True, ""
+    # One caller probes; other arrivals wait. Require consecutive failures, not one busy /v1/models response.
+    ok = False
+    for attempt in range(3):
+        if backend_ok(fresh=True):
+            ok = True
+            break
+        if attempt < 2:
+            time.sleep(0.5)
+    if ok:
+        with cond:
+            loading = False
+            cond.notify_all()
+        return ""
+    threading.Thread(target=loader, daemon=True).start()
+    with cond:
         while loading:
             cond.wait(timeout=5)
         return load_error
@@ -137,7 +186,7 @@ def loader():
     write_state("loading")
     t0 = time.time()
     rc, tail = run_duo("up")
-    ok = rc == 0 and backend_ok(10)
+    ok = rc == 0 and backend_ok(10, fresh=True)
     with cond:
         loading = False
         load_error = "" if ok else ("the pair did not start: " + tail[-600:])
@@ -146,8 +195,24 @@ def loader():
     log("the pair is %s after %.0f s" % ("ready" if ok else "NOT ready", time.time() - t0) + ("" if ok else ": " + tail.replace("\n", " | ")[-300:]))
 
 
+def unload_pair():
+    """Caller sets unloading under cond. Do not hold it across down (status must remain responsive)."""
+    global unloading, last_done, probe_at
+    try:
+        rc, tail = run_duo("down")
+    finally:
+        with cond:
+            unloading = False
+            last_done = time.time()
+            probe_at = 0
+            cond.notify_all()
+    write_state("unloaded")
+    log("unloaded" if rc == 0 else "unload failed: " + tail.replace("\n", " | ")[-300:])
+    return rc, tail
+
+
 def idle_watch():
-    global last_done
+    global unloading
     limit = args.idle_min * 60
     every = min(30.0, max(1.0, limit / 4)) if limit > 0 else 30.0
     while True:
@@ -155,21 +220,59 @@ def idle_watch():
         if limit <= 0:
             continue
         with lock:
-            quiet = active == 0 and not loading and time.time() - last_done >= limit
+            quiet = active == 0 and not loading and not unloading and time.time() - last_done >= limit
         if not quiet or not backend_ok():
             continue
         with lock:   # (again under the lock: a request may have come in while the backend was asked)
-            if active or loading or time.time() - last_done < limit:
+            if active or loading or unloading or time.time() - last_done < limit:
                 continue
-            log("no request for %g minutes: unloading the pair" % args.idle_min)
-            rc, tail = run_duo("down")   # (held under the lock: a request that comes now waits, then loads the pair again)
-            last_done = time.time()
-        write_state("unloaded")
-        log("unloaded" if rc == 0 else "unload failed: " + tail.replace("\n", " | ")[-300:])
+            unloading = True
+        log("no request for %g minutes: unloading the pair" % args.idle_min)
+        unload_pair()
 
 
 class Gate(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
+    timeout = 120   # idle client sockets must not hold a thread forever
+
+    def handle_expect_100(self):
+        # Authentication and framing checks happen before an invitation to send a body.
+        if not self.authed():
+            self.close_connection = True
+            self.reply(401, {"error": {"type": "authentication_error", "message": "missing or wrong API key"}})
+            return False
+        if self.body_length() is None:
+            return False
+        self.send_response_only(100)
+        self.end_headers()
+        return True
+
+    def body_length(self):
+        def bad(code, msg):
+            self.close_connection = True
+            self.reply(code, {"error": {"type": "invalid_request_error", "message": msg}})
+        if self.headers.get("Transfer-Encoding") is not None:
+            bad(501, "Transfer-Encoding request bodies are not supported")
+            return None
+        lengths = self.headers.get_all("Content-Length", [])
+        if len(lengths) > 1:
+            bad(411, "one non-negative Content-Length is required")
+            return None
+        raw = lengths[0] if lengths else ""
+        if not raw and self.command in ("POST", "PUT", "PATCH"):
+            bad(411, "Content-Length is required")
+            return None
+        if raw and (not raw.isascii() or not raw.isdecimal()):
+            bad(411, "non-negative Content-Length is required")
+            return None
+        if len(raw) > 20:
+            bad(413, "Content-Length is too large")
+            return None
+        n = int(raw) if raw else 0
+        if n > args.max_body_mb * 1048576:
+            bad(413, "Content-Length is too large")
+            return None
+        return n
 
     def log_message(self, fmt, *a):
         pass
@@ -186,35 +289,37 @@ class Gate(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(body)
+        if self.command != "HEAD":
+            self.wfile.write(body)
 
     def handle_any(self):
-        global active, last_done
+        global active, last_done, unloading, forwarding
         path = self.path.split("?")[0]
-        try:
-            n = int(self.headers.get("Content-Length") or 0)
-        except ValueError:
-            n = -1
-        if n < 0 or n > args.max_body_mb * 1048576:
-            self.close_connection = True
-            return self.reply(413 if n > 0 else 400, {"error": {"type": "invalid_request_error", "message": "bad or too large Content-Length"}})
-        body = self.rfile.read(n) if n else b""
-        if path == "/duo/status":   # (no key needed: says only whether the pair is loaded)
+        if path == "/duo/status" and self.command in ("GET", "HEAD"):
+            # No body read or subprocess wait; the last probe's result is enough for a liveness check.
+            if self.headers.get("Content-Length") or self.headers.get("Transfer-Encoding"):
+                self.close_connection = True
             with lock:
                 idle = int(time.time() - last_done)
-                st = {"loaded": None, "loading": loading, "active": active, "idle_s": idle, "idle_min": args.idle_min}
-            st["loaded"] = backend_ok()
+                st = {"loaded": probe_value, "loading": loading, "unloading": unloading,
+                      "active": active, "idle_s": idle, "idle_min": args.idle_min}
             return self.reply(200, st)
         if not self.authed():
+            self.close_connection = True
             return self.reply(401, {"error": {"type": "authentication_error", "message": "missing or wrong API key"}})
+        n = self.body_length()
+        if n is None:
+            return
+        body = self.rfile.read(n) if n else b""
+        if len(body) != n:
+            self.close_connection = True
+            return self.reply(400, {"error": {"type": "invalid_request_error", "message": "short request body"}})
         if path == "/duo/unload" and self.command == "POST":
-            with lock:
-                if active or loading:
+            with cond:
+                if active or loading or unloading:
                     return self.reply(409, {"error": {"type": "busy", "message": "a request is in flight"}})
-                rc, tail = run_duo("down")
-                last_done = time.time()
-            write_state("unloaded")
-            log("unloaded on request" if rc == 0 else "unload on request failed: " + tail.replace("\n", " | ")[-300:])
+                unloading = True
+            rc, tail = unload_pair()
             return self.reply(200 if rc == 0 else 500, {"unloaded": rc == 0})
         if self.command == "GET" and path in ("/v1/models", "/models"):
             if backend_ok():
@@ -227,7 +332,13 @@ class Gate(BaseHTTPRequestHandler):
             err = ensure_loaded()
             if err:
                 return self.reply(503, {"error": {"type": "unavailable", "message": err}})
-            self.forward(body)
+            with lock:
+                forwarding += 1
+            try:
+                self.forward(body)
+            finally:
+                with lock:
+                    forwarding -= 1
         finally:
             with lock:
                 active -= 1
@@ -235,7 +346,8 @@ class Gate(BaseHTTPRequestHandler):
 
     def forward(self, body):
         up = http.client.HTTPConnection("127.0.0.1", args.backend, timeout=3600)
-        headers = {k: v for k, v in self.headers.items() if k.lower() not in HOP}
+        hop = HOP | {v.strip().lower() for v in self.headers.get("Connection", "").split(",")}
+        headers = {k: v for k, v in self.headers.items() if k.lower() not in hop}
         if body or self.command in ("POST", "PUT", "PATCH"):
             headers["Content-Length"] = str(len(body))
         try:
@@ -247,10 +359,15 @@ class Gate(BaseHTTPRequestHandler):
         try:
             self.send_response(r.status, r.reason)
             length = r.getheader("Content-Length")
+            hop = HOP | {v.strip().lower() for v in (r.getheader("Connection") or "").split(",")}
             for k, v in r.getheaders():
-                if k.lower() not in HOP:
+                if k.lower() not in hop:
                     self.send_header(k, v)
-            if length is not None:
+            if self.command == "HEAD" or r.status in (204, 304) or 100 <= r.status < 200:
+                if length is not None and (self.command == "HEAD" or r.status == 304):
+                    self.send_header("Content-Length", length)
+                self.end_headers()
+            elif length is not None:
                 self.send_header("Content-Length", length)
                 self.end_headers()
                 while True:
@@ -302,12 +419,15 @@ def main():
     ap.add_argument("--busy-max-s", type=int, default=2400, help="longest wait for a busy pattern to clear (0: no limit)")
     ap.add_argument("--busy-poll-s", type=int, default=5, help="seconds between looks at the busy patterns")
     ap.add_argument("--max-body-mb", type=int, default=64, help="largest request body passed on")
+    ap.add_argument("--up-timeout", type=float, default=1200, help="deadline in seconds for duo.sh up")
+    ap.add_argument("--down-timeout", type=float, default=60, help="deadline in seconds for duo.sh down")
     args = ap.parse_args()
     args.run_dir = args.run_dir.expanduser()
     args.busy_poll_s = max(1, args.busy_poll_s)
     srv = Server(("127.0.0.1", args.listen), Gate)
     threading.Thread(target=idle_watch, daemon=True).start()
     write_state("loaded" if backend_ok() else "unloaded")
+    threading.Thread(target=probe_watch, daemon=True).start()
     log("gate on 127.0.0.1:%d -> 127.0.0.1:%d; unload after %g idle minutes" % (args.listen, args.backend, args.idle_min))
     srv.serve_forever()
 

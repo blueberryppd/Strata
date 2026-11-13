@@ -77,7 +77,7 @@ RUN=$LOCAL_RUN
 KEY="$RUN/api_key"            # the API key (600): made at the first start, checked by the gate and the server
 AUTH="$RUN/api_auth.hdr"      # the same as one HTTP header line (600), for `curl -H @file`: the key is never an argument
 WANTED="$RUN/.duo_wanted"; LOCK="$RUN/.duo_starting"
-SSH=(ssh -o ConnectTimeout=8 -o BatchMode=yes ${SSH_OPTS[@]+"${SSH_OPTS[@]}"})
+SSH=(ssh -o ConnectTimeout=8 -o ServerAliveInterval=10 -o ServerAliveCountMax=3 -o BatchMode=yes ${SSH_OPTS[@]+"${SSH_OPTS[@]}"})
 
 die() { printf 'duo.sh: %s\n' "$*" >&2; exit 1; }
 is_num() { case "$1" in ''|*[!0-9]*) return 1 ;; *) return 0 ;; esac; }
@@ -149,7 +149,12 @@ engine_regex() {
 }
 host_down() {
   if [ "$H_ROLE" = suffix ]; then
-    kill_matching 'serve\.server --engine strata --config' "$H_RUN/serve.json"
+    # Require the exact config argument, not a substring of another pair's filename.
+    local pid cmd
+    for pid in $(pgrep -U "$(id -u)" -f 'serve\.server --engine strata --config' 2>/dev/null); do
+      cmd=$(ps -ww -o command= -p "$pid" 2>/dev/null) || continue
+      case "$cmd" in *"--config $H_RUN/serve.json --host "*) kill "$pid" 2>/dev/null ;; esac
+    done
     sleep 1
   fi
   kill_matching "$(engine_regex)" "strata_ds4"
@@ -199,7 +204,11 @@ backend_ok() {   # the pair is loaded and answers
 gate_ok() { curl -s -m3 "http://127.0.0.1:$APIPORT/duo/status" 2>/dev/null | grep -q '"idle_min"'; }
 gate_start() {
   gate_ok && return 0
-  kill_local "duo_gate\.py --listen $APIPORT( |\$)" "$HERE/duo_gate.py"
+  # A slow gate is not a dead gate. In particular ensure must never kill one on a failed 3 s probe.
+  if pgrep -U "$(id -u)" -f "duo_gate\.py --listen $APIPORT( |\$)" >/dev/null; then
+    echo "the gate process is running but slow to answer; leaving it alone"
+    return 0
+  fi
   # the gate reads the busy patterns from a file: a pattern on its own command line would match the gate itself
   ( umask 077; : > "$RUN/busy_patterns"
     for p in ${BUSY_PATTERNS[@]+"${BUSY_PATTERNS[@]}"}; do [ -n "$p" ] && printf '%s\n' "$p" >> "$RUN/busy_patterns"; done )
@@ -233,10 +242,22 @@ host_key_alias() {   # the name ssh knows the peer's host key by: kept when the 
   "${SSH[@]}" -G "$PEER" 2>/dev/null | awk '$1 == "hostkeyalias" {a = $2} $1 == "hostname" {h = $2} END {print (a != "" ? a : h)}'
 }
 
+remember_session() {   # NAME PID: only sessions we launched, with their exact command for PID-reuse protection
+  ( umask 077; printf '%s\n' "$2" > "$RUN/$1.pid"; ps -ww -o command= -p "$2" > "$RUN/$1.command" )
+}
+stop_session() {
+  local pid was now
+  pid=$(cat "$RUN/$1.pid" 2>/dev/null) || return 0
+  was=$(cat "$RUN/$1.command" 2>/dev/null) || return 0
+  now=$(ps -ww -o command= -p "$pid" 2>/dev/null) || return 0
+  [ -n "$was" ] && [ "$was" = "$now" ] && kill "$pid" 2>/dev/null
+  rm -f "$RUN/$1.pid" "$RUN/$1.command"
+  return 0
+}
 down() {
-  # the long-lived ssh sessions of this pair (the API tunnel, or the peer's prefix engine)
-  kill_local "ssh .*-L $BACKPORT:127\.0\.0\.1:$SERVER_PORT " "start_server.sh"
-  kill_local "ssh .*start_prefix\.sh" "start_prefix.sh"
+  # No broad ssh match: another pair may use a script with the same name.
+  stop_session server_ssh
+  stop_session prefix_ssh
   if [ "$LOCAL_ROLE" = suffix ]; then run_on local 'host_down'; run_on peer 'host_down' 2>/dev/null
   else run_on peer 'host_down' 2>/dev/null; run_on local 'host_down'; fi
   echo unloaded
@@ -313,6 +334,7 @@ up_local_prefix() {   # this Mac: prefix engine. The peer: suffix engine under S
   nohup ssh -o BatchMode=yes -o HostName="$PIP" ${hka:+-o HostKeyAlias="$hka"} -o ServerAliveInterval=30 -o ExitOnForwardFailure=yes \
     ${SSH_OPTS[@]+"${SSH_OPTS[@]}"} -L "$BACKPORT:127.0.0.1:$SERVER_PORT" "$PEER" "exec bash $(rq "$start")" > "$RUN/server.log" 2>&1 < /dev/null &
   job=$!
+  remember_session server_ssh "$job"
   for i in $(seq 1 100); do
     kill -0 "$job" 2>/dev/null || { echo "the ssh session that holds the server ended:"; tail -3 "$RUN/server.log"; break; }
     curl_auth -m2 "http://127.0.0.1:$BACKPORT/v1/models" 2>/dev/null | grep -q '"id"' &&
@@ -332,6 +354,7 @@ up_local_suffix() {   # the peer: prefix engine, held by one ssh session. This M
   nohup ssh -o BatchMode=yes -o HostName="$PIP" ${hka:+-o HostKeyAlias="$hka"} -o ServerAliveInterval=30 \
     ${SSH_OPTS[@]+"${SSH_OPTS[@]}"} "$PEER" "exec bash $(rq "$start")" > "$RUN/prefix.log" 2>&1 < /dev/null &
   job=$!
+  remember_session prefix_ssh "$job"
   for i in $(seq 1 300); do grep -q "waiting on\|maya-ds4:" "$RUN/prefix.log" 2>/dev/null && break; kill -0 "$job" 2>/dev/null || break; sleep 2; done
   grep -E "layers \[|maya-ds4:" "$RUN/prefix.log" | cut -c1-170
   grep -q "waiting on" "$RUN/prefix.log" || { echo "the prefix host did not start (see $RUN/prefix.log)"; return 1; }
@@ -600,7 +623,6 @@ ensure)
   gate_start ;;
 start)
   touch "$WANTED"
-  gate_ok || down >/dev/null   # (something of an earlier run may hold a port)
   gate_start || exit 1
   exec "$SELF" up ;;
 status)
@@ -613,13 +635,45 @@ bench)
   exec "$GATE_PYTHON" "$HERE/bench.py" --url "http://127.0.0.1:$APIPORT" --key-file "$KEY" --model "$MODEL_ID" --n 400 \
     --rounds "${ROUNDS:-5}" --label "${LABEL:-duo}" --out "$RUN/bench.jsonl" ;;
 up)
-  if [ -d "$LOCK" ] && [ $(( $(date +%s) - $(stat -f %m "$LOCK") )) -lt 900 ]; then   # a load is under way: its result is ours
-    for i in $(seq 1 120); do [ -d "$LOCK" ] || break; sleep 3; done
-    backend_ok && { echo "loaded (by the load that was under way)"; exit 0; }
+  # flock is provided by Python's standard library on macOS. Hold it in a supervisor while the real up runs;
+  # neither engines nor ssh inherit it. There is no age-based stealing, stale directory removal or PID reuse race.
+  if [ "${DUO_UP_LOCKED:-}" != "$RUN" ]; then
+    exec "$GATE_PYTHON" - "$SELF" "$RUN" <<'LOCKPY'
+import fcntl, os, signal, subprocess, sys, time
+script, run = sys.argv[1:]
+with open(os.path.join(run, '.duo_starting.lock'), 'a') as lockfile:
+    until = time.monotonic() + 1200
+    while True:
+        try:
+            fcntl.flock(lockfile, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except BlockingIOError:
+            if time.monotonic() >= until:
+                sys.exit('a load is still under way after 1200 s; its lock was not stolen')
+            time.sleep(0.25)
+    env = dict(os.environ, DUO_UP_LOCKED=run)
+    child = subprocess.Popen(['/bin/bash', script, 'up'], env=env)
+    def interrupted(signum, frame):
+        child.send_signal(signum)
+    signal.signal(signal.SIGTERM, interrupted)
+    signal.signal(signal.SIGINT, interrupted)
+    signal.signal(signal.SIGHUP, interrupted)
+    try:
+        sys.exit(child.wait())
+    finally:
+        # If this supervisor is interrupted, do not leave a loading script without its lock.
+        if child.poll() is None:
+            child.terminate()
+            child.wait()
+LOCKPY
   fi
   backend_ok && { echo "already loaded"; exit 0; }
-  rmdir "$LOCK" 2>/dev/null; mkdir "$LOCK" 2>/dev/null || { echo "a load is already under way"; exit 1; }
-  trap 'rmdir "$LOCK" 2>/dev/null' EXIT
+  # A failed probe while a request is being generated is not permission to tear down a working pair. The gate
+  # counts all requests; direct up is conservative too: an alive local engine requires an explicit restart.
+  if pgrep -U "$(id -u)" -f "$(local_engine_regex)" >/dev/null; then
+    echo "the engine is running but its API probe failed; leaving the pair alone (use restart explicitly)"
+    exit 1
+  fi
   down >/dev/null
   link_ips || exit 1
   if [ "$LOCAL_ROLE" = prefix ]; then

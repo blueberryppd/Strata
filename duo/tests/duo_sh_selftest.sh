@@ -124,6 +124,9 @@ class H(BaseHTTPRequestHandler):
         if not KEY or self.headers.get("Authorization") != "Bearer " + KEY:
             return self.out(401, {"error": "wrong key"})
         if self.path == "/v1/models":
+            if self.headers.get("X-Selftest-Slow"):
+                import time
+                time.sleep(3)
             return self.out(200, {"object": "list", "data": [{"id": cfg["model_name"], "object": "model", "owned_by": "standin"}]})
         if self.path == "/v1/chat/completions":
             return self.out(200, {"choices": [{"message": {"role": "assistant", "content": "stand-in answer; slots in " + os.environ.get("STRATA_DS4_SLOT_DIR", "?")}}],
@@ -203,6 +206,12 @@ expect "start: exit 0 and the pair answers" '[ "$rc" = 0 ] && ask | grep -q "sta
 KEYV=$(cat "$RUN/api_key" 2>/dev/null)
 expect "the key and its header file are mode 600" '[ "$(stat -f %Lp "$RUN/api_key")" = 600 ] && [ "$(stat -f %Lp "$RUN/api_auth.hdr")" = 600 ] && [ "$(stat -f %Lp "$PD/duo/run/api_key")" = 600 ]'
 expect "the key is in no process's arguments" 'key_hidden'
+# Observe ps WHILE curl carries the authorization header, not only after it has exited.
+curl -s -m 10 -H "@$RUN/api_auth.hdr" -H 'X-Selftest-Slow: 1' "http://127.0.0.1:$BP/v1/models" > "$S/slow_curl.out" &
+cpid=$!
+sleep .5
+expect "curl is running and the API key is absent from every argv" 'kill -0 "$cpid" 2>/dev/null && key_hidden'
+wait "$cpid"
 expect "prefix engine here, server and suffix engine on the other host, held by one ssh session" 'running | grep -q "strata_ds4 --pack .*this mac.*--duo-listen 127.0.0.1:$LP --duo-allow 127.0.0.1" && running | grep -q "serve.server --engine strata --config .*peer home.*serve.json" && running | grep -q "strata_ds4 --pack .*peer home.*--duo-connect 127.0.0.1:$LP" && running | grep -q "ssh .*-L $BP:127.0.0.1:$BP peer exec bash .*start_server.sh"' "$(running)"
 expect "kept conversations: a folder for this model on the suffix host" 'ask | grep -q "peer dir/o.brien/duo/run/slots-x"' "$(ask)"
 expect "the gate was given the busy patterns in a file" 'grep -q "no_such_job" "$RUN/busy_patterns" && ! running | grep "duo_gate.py" | grep -q no_such_job'
@@ -210,6 +219,19 @@ out=$(bash "$DUO" status 2>&1)
 expect "status: gate loaded, both hosts listed" 'printf "%s\n" "$out" | grep -q "\"loaded\": true" && printf "%s\n" "$out" | grep -q "other Mac" && [ "$(printf "%s\n" "$out" | grep -c strata_ds4)" -ge 2 ]' "$out"
 out=$(bash "$DUO" up 2>&1)
 expect "up while loaded: already loaded" '[ "$out" = "already loaded" ]' "$out"
+# A stopped process still has a live PID; a slow HTTP probe is never permission for ensure to kill it.
+gatepid=$(pgrep -f "duo_gate.py --listen $GP " | while read -r p; do ps -ww -o command= -p "$p" | grep -F -q -- "$RUN" && echo "$p"; done)
+kill -STOP "$gatepid"
+out=$(bash "$DUO" ensure 2>&1)
+expect "ensure never kills a merely slow gate" 'kill -0 "$gatepid" 2>/dev/null && printf "%s" "$out" | grep -q "leaving it alone"' "$out"
+kill -CONT "$gatepid"
+# A wrong auth header forces a failed backend probe; both engine processes must survive direct up.
+cp "$RUN/api_auth.hdr" "$S/auth.saved"
+printf 'Authorization: Bearer selftest-wrong\n' > "$RUN/api_auth.hdr"
+touch -t 203001010000 "$RUN/api_auth.hdr"
+out=$(bash "$DUO" up 2>&1); rc=$?
+expect "one failed direct up probe never tears down an alive engine" '[ "$rc" = 1 ] && printf "%s" "$out" | grep -q "leaving the pair alone" && running | grep -q "strata_ds4 .*--duo-listen"' "$out"
+mv "$S/auth.saved" "$RUN/api_auth.hdr"
 out=$(ROUNDS=1 LABEL=selftest bash "$DUO" bench 2>&1)
 expect "bench: one round through the gate, one line in run/bench.jsonl" 'printf "%s\n" "$out" | grep -q "overall: " && [ "$(wc -l < "$RUN/bench.jsonl" | tr -d " ")" = 1 ]' "$out"
 out=$(bash "$DUO" restart 2>&1); rc=$?
@@ -217,13 +239,23 @@ expect "restart: loaded again" '[ "$rc" = 0 ] && ask | grep -q "stand-in answer"
 out=$(bash "$DUO" down 2>&1)
 expect "down: engines, server and session gone, the gate stays" '[ "$out" = unloaded ] && ! running | grep -q -E "strata_ds4|serve.server|start_server" && running | grep -q duo_gate.py' "$(running)"
 expect "a request after down: the gate loads the pair again (it calls duo.sh up)" 'ask | grep -q "stand-in answer" && running | grep -q "strata_ds4 .*--duo-listen"' "$(tail -5 "$RUN/gate.log")"
-mkdir "$RUN/.duo_starting"; (sleep 4; rmdir "$RUN/.duo_starting") &
+/usr/bin/python3 - "$RUN/.duo_starting.lock" <<'LOCKTEST' &
+import fcntl,sys,time
+with open(sys.argv[1], 'a') as f:
+    fcntl.flock(f, fcntl.LOCK_EX)
+    print('lock held', flush=True)
+    time.sleep(4)
+LOCKTEST
+locker=$!
+sleep 1
+before=$(date +%s)
 out=$(bash "$DUO" up 2>&1)
-expect "a load under way (the lock folder): up waits for it and takes its result" '[ "$out" = "loaded (by the load that was under way)" ]' "$out"
-mkdir "$RUN/.duo_starting"; touch -t 202001010000 "$RUN/.duo_starting"
+wait "$locker"
+expect "a live load lock is not stolen: up waits then probes" '[ "$out" = "already loaded" ] && [ $(( $(date +%s) - before )) -ge 2 ]' "$out"
+# The lock file can stay forever: an unlocked inode is not a live load.
 bash "$DUO" down > /dev/null 2>&1
 out=$(bash "$DUO" up 2>&1); rc=$?
-expect "a stale lock (older than 15 minutes) is ignored: up loads" '[ "$rc" = 0 ] && [ ! -d "$RUN/.duo_starting" ] && ask | grep -q "stand-in answer"' "$out"
+expect "an unlocked persistent lock file does not block a load" '[ "$rc" = 0 ] && ask | grep -q "stand-in answer"' "$out"
 out=$(bash "$DUO" stop 2>&1)
 expect "stop: nothing of the pair is left, not wanted" '[ "$out" = stopped ] && ! running | grep -q -E "strata_ds4|serve.server|duo_gate|start_server" && [ ! -e "$RUN/.duo_wanted" ]' "$(running)"
 bash "$DUO" ensure > /dev/null 2>&1
