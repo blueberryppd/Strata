@@ -148,7 +148,7 @@ The first connection asks you to confirm the other Mac's host key. Do this once 
 
 ```sh
 xcode-select --install                 # once, if the Command Line Tools are not installed
-git clone -b strata-duo <URL of this repository> ~/strata-duo
+git clone -b strata-duo https://github.com/blueberryppd/Strata.git ~/strata-duo
 ```
 
 Do the same on the other Mac. Both must be at the same commit.

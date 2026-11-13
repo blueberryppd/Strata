@@ -133,7 +133,7 @@ ssh -o BatchMode=yes user@other-mac.local true && echo ok     # 必须不问密�
 
 ```sh
 xcode-select --install                 # 只需一次，如果还没装命令行工具
-git clone -b strata-duo <本仓库的地址> ~/strata-duo
+git clone -b strata-duo https://github.com/blueberryppd/Strata.git ~/strata-duo
 ```
 
 在另一台 Mac 上做同样的事。两台必须是同一个提交（commit）。
